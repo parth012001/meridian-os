@@ -26,14 +26,32 @@ function steps(s: State): { list: Step[]; next: number } {
   return { list, next };
 }
 
+/** Open expedited POs, read from the ledger: a proposed expedite whose action later executed and has not since missed. The World keeps this on the PO row; the ledger is what the UI can see. */
+function expeditedPOs(s: State): { po: string; order: string }[] {
+  const executed = new Set(s.ledger.filter(l => l.kind === "execute" && l.ref_type === "action").map(l => l.ref_id));
+  const missed = new Set(s.ledger.filter(l => l.kind === "observe" && l.summary.startsWith("event expedite_failed")).map(l => l.ref_id));
+  const out: { po: string; order: string }[] = [];
+  for (const l of s.ledger) {
+    if (l.kind !== "propose" || l.ref_type !== "action" || !executed.has(l.ref_id) || !l.detail) continue;
+    try {
+      const d = JSON.parse(l.detail); const lever = d?.lever;
+      if (lever?.type === "expedite_po" && typeof lever.po_id === "string" && !missed.has(lever.po_id) && !out.some(x => x.po === lever.po_id)) out.push({ po: lever.po_id, order: /on (\S+) \(/.exec(l.summary)?.[1] ?? "" });
+    } catch { /* not a lever row */ }
+  }
+  return out;
+}
+
 export function Simulator({ s, owner, act }: { s: State; owner: boolean; act: Act }) {
   const { list, next } = steps(s);
   const world = list.filter(x => x.who === "world");
+  const expedited = expeditedPOs(s);
   return <div className="dock" role="region" aria-label="Scenario controls">
     <div className="inner">
-      <span className="label"><b>Outside world</b> and the org's own clocks, in demo order</span>
-      <div className="group">
-        <button className="btn quiet" onClick={act("/reset")} disabled={s.busy || !owner} title="Reseed the World and restore the baseline Charter">Reset world</button>
+      <div className="top">
+        <span className="label"><b>Outside world</b> and the org's own clocks, in demo order</span>
+        <span className="spacer" />
+        <span className="next">{!owner && world.length ? "Viewer: the world's events and decisions need the owner." : next === 0 ? <>Scenario complete. <b>Reset world</b> to run it again.</> : ""}</span>
+        <button className="btn quiet small" onClick={act("/reset")} disabled={s.busy || !owner} title="Reseed the World and restore the baseline Charter">Reset world</button>
       </div>
       <div className="group">
         {list.map(st => {
@@ -45,7 +63,9 @@ export function Simulator({ s, owner, act }: { s: State; owner: boolean; act: Ac
           return <button key={st.n} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || (st.ownerOnly && !owner)} onClick={act(st.path!, st.body)} title={st.who === "world" ? "Stands in for the outside world" : "Runs the agent seat"}><span className="n">{st.n}</span>{st.label}</button>;
         })}
       </div>
-      <span className="next">{!owner && world.length ? "Viewer: the world's events and decisions need the owner." : next === 0 ? <>Scenario complete. <b>Reset world</b> to run it again.</> : ""}</span>
+      {expedited.length > 0 && <div className="group">
+        {expedited.map(x => <button key={x.po} className="btn" disabled={s.busy || !owner} title={`The supplier misses the Fast Track date on ${x.po}. ${x.order} goes late again; the trust ledger records the failure.`} onClick={act("/events/expedite-miss", { po_id: x.po })}>Supplier misses Fast Track on {x.po}</button>)}
+      </div>}
     </div>
   </div>;
 }

@@ -32,18 +32,29 @@ export interface Approval {
   note: string | null; created_at: string; action_type: string; order_id: string; cost_usd: number; rationale: string | null; gate_rule: string | null;
 }
 export interface Message { id: string; order_id: string; kind: string; to_contact: string; subject: string; body: string; status: string; created_at: string }
-export interface Replay { would_have_auto_executed?: number; total_usd?: number; all_approved_by_owner?: boolean; any_rejected?: boolean; [k: string]: unknown }
+export interface Evidence { approval_id: string; action_id: string; order_id: string; cost_usd: number; gate_rule: string | null; ts: string }
+export interface Grant { path: string; before: unknown; after: unknown; proposal_id: string; charter_version: number; granted_at: string }
+export interface ReplayRow { action_id: string; approval_id: string; order_id: string; type: string; cost_usd: number; decision: "approved" | "rejected"; before_verdict: string; before_rule: string; after_verdict: string; after_rule: string; flips: boolean }
+/** Every parked action the owner decided, re-run through the gate under the current Charter and under the patched one. Built by src/trust.ts. */
+export interface Replay {
+  path: string; before: unknown; after: unknown; window: number; evaluated: number; skipped: number;
+  would_have_auto_executed: number; total_usd: number; still_parked: number; rejected_would_have_executed: number; any_rejected: boolean;
+  rows: ReplayRow[]; computed_at: string;
+  streak?: { shape: string; streak: number; threshold: number; evidence: Evidence[] };
+}
 export interface Proposal {
   id: string; proposed_by: string; summary: string; evidence: string; patch: string; status: string; decided_by: string | null; created_at: string;
-  replay?: Replay | string | null; streak?: number; threshold?: number; shape?: string;
+  shape?: string | null; replay?: Replay | null;
 }
 export interface LedgerRow {
   id: number; ts: string; role: string; on_behalf_of: string | null; kind: string; ref_type: string | null; ref_id: string | null;
   summary: string; detail: string | null; charter_rule: string | null;
 }
+/** Trust is earned per action shape (type, optionally per supplier), never per agent. */
 export interface TrustRow {
-  shape: string; action_type: string; streak: number; threshold: number; total_approved: number; total_rejected: number; total_failed: number;
-  status: "supervised" | "proposed" | "autonomous" | "demoted" | string; evidence?: string; updated_at?: string;
+  shape: string; action_type: string; streak: number; threshold: number;
+  total_approved: number; total_rejected: number; total_failed: number; total_autonomous: number;
+  status: "supervised" | "proposed" | "autonomous" | "demoted"; evidence: Evidence[]; grant: Grant | null; updated_at: string;
 }
 export interface State {
   mode: string; busy: boolean; charter: Charter; kpis: Kpis; board: BoardRow[]; approvals: Approval[]; messages: Message[];

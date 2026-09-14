@@ -43,14 +43,28 @@ function diffLines(patch: string, charter: Charter): { path: string; before: unk
 }
 const show = (v: unknown) => v === undefined ? "unset" : typeof v === "object" ? JSON.stringify(v) : String(v);
 
-function ReplayLine({ r }: { r: Replay | string | null | undefined }) {
+/** The replay is the backend's terraform-plan for authority: the same gate, run over past decisions under the patched Charter. */
+function ReplayView({ r }: { r: Replay | null | undefined }) {
   if (!r) return null;
-  let rep: Replay; try { rep = typeof r === "string" ? JSON.parse(r) : r; } catch { return null; }
-  const n = rep.would_have_auto_executed; if (typeof n !== "number") return null;
-  const flag = rep.any_rejected === true;
+  const asked = r.rows.filter(x => x.decision === "approved" && x.before_verdict === "approve").length;
+  const flag = r.rejected_would_have_executed > 0;
+  const parkedUnder = [...new Set(r.rows.filter(x => !x.flips && x.after_verdict === "approve").map(x => x.after_rule))].join(", ");
   return <div className={`replay ${flag ? "flag" : ""}`}>
-    Under this change, <b>{n}</b> past {n === 1 ? "approval" : "approvals"}{typeof rep.total_usd === "number" ? ` (${usd(rep.total_usd)})` : ""} would have executed without you.
-    {flag ? " At least one of them you rejected." : rep.all_approved_by_owner === true ? " You approved every one." : ""}
+    <div>Under this change, <b>{r.would_have_auto_executed}</b> of {asked} past {asked === 1 ? "approval" : "approvals"} ({usd(r.total_usd)}) would have executed without you.
+      {r.still_parked > 0 && <> {r.still_parked} would still park under {parkedUnder}.</>}
+      {flag && <> <b>{r.rejected_would_have_executed} you rejected would have executed too.</b></>}
+    </div>
+    {r.rows.length > 0 && <details className="decided"><summary>{r.rows.length} past {r.rows.length === 1 ? "decision" : "decisions"} replayed</summary>
+      <div className="tablewrap"><table>
+        <thead><tr><th>order</th><th>action</th><th className="num">cost</th><th>you said</th><th>gate now</th><th>gate after</th></tr></thead>
+        <tbody>{r.rows.map(x => <tr key={x.action_id}>
+          <td className="id">{x.order_id}</td><td>{words(x.type)}</td><td className="num">{usd(x.cost_usd)}</td>
+          <td>{x.decision}</td>
+          <td><span className="id">{x.before_verdict}</span> <span className="mute small">{x.before_rule}</span></td>
+          <td><span className={`id ${x.flips ? "" : "mute"}`} style={x.flips ? { fontWeight: 600 } : undefined}>{x.after_verdict}</span> <span className="mute small">{x.after_rule}</span></td>
+        </tr>)}</tbody>
+      </table></div>
+    </details>}
   </div>;
 }
 
@@ -61,15 +75,15 @@ function ProposalCard({ p, owner, busy, act, charter }: { p: Proposal; owner: bo
     <div className="top">
       <span className="title">{p.summary}</span>
       <span className="spacer" />
-      {p.proposed_by && <span className="stamp quiet">by {words(p.proposed_by)}</span>}
-      {typeof p.streak === "number" && typeof p.threshold === "number" && <span className="stamp">{p.streak}/{p.threshold} clean</span>}
+      {p.proposed_by && <span className="stamp quiet">by {p.proposed_by === "trust" ? "trust ledger" : words(p.proposed_by)}</span>}
+      {p.replay?.streak && <span className="stamp" title={p.replay.streak.shape}>{p.replay.streak.streak}/{p.replay.streak.threshold} clean approvals</span>}
       <span className={`stamp ${p.status === "merged" ? "ok" : p.status === "rejected" ? "bad" : "warn"}`}>{p.status}</span>
     </div>
     {lines.length > 0
       ? <div className="diff">{lines.map(l => <span key={l.path} style={{ display: "contents" }}><span className="path">{l.path}</span><span className="old">{open ? show(l.before) : ""}</span><span className="mute">{open ? "→" : p.status === "merged" ? "now" : "stays"}</span><span className="new">{open || p.status === "merged" ? show(l.after) : show(l.before)}</span></span>)}</div>
       : <pre className="small">{p.patch}</pre>}
-    <div className="why"><b>Evidence</b> {p.evidence}</div>
-    <ReplayLine r={p.replay} />
+    <div className="why"><b>Evidence</b> {p.replay ? p.evidence.replace(/\s*Under this change[^]*$/, "") : p.evidence}</div>
+    <ReplayView r={p.replay} />
     {open && owner && <div className="decide">
       <button className="btn approve" disabled={busy} onClick={act(`/proposals/${p.id}`, { decision: "merge" })}>Merge into Charter</button>
       <button className="btn reject" disabled={busy} onClick={act(`/proposals/${p.id}`, { decision: "reject" })}>Reject</button>

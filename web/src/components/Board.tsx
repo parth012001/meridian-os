@@ -18,7 +18,7 @@ function taskTone(o: BoardRow) {
   const t = o.task;
   if (!t) return o.days_late ? "bad" : "ok";
   if (t.status === "resolved" && t.outcome === "recovered") return "ok";
-  if (t.status === "escalated" || t.outcome === "failed") return "bad";
+  if (t.status === "escalated" || (t.outcome ?? "").includes("failed")) return "bad";
   return o.days_late ? (t.status === "open" ? "bad" : "warn") : "ok";
 }
 const taskLabel = (o: BoardRow) => o.task ? `${words(o.task.status)}${o.task.outcome ? `, ${o.task.outcome}` : ""}` : "";
