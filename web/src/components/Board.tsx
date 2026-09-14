@@ -51,8 +51,8 @@ export function Board({ s }: { s: State }) {
           {s.board.map(o => {
             const tone = taskTone(o); const r = rec[o.id] ?? []; const isOpen = open === o.id;
             return <Fragment key={o.id}>
-              <tr className={`order ${isOpen ? "open" : ""}`} onClick={() => setOpen(isOpen ? null : o.id)} tabIndex={0} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(isOpen ? null : o.id); } }} aria-expanded={isOpen}>
-                <td className="nowrap"><span className={`mark ${tone}`} aria-hidden="true" /><span className="id">{o.id}</span></td>
+              <tr className={`order ${isOpen ? "open" : ""}`} onClick={() => setOpen(isOpen ? null : o.id)}>
+                <td className="nowrap"><span className={`mark ${tone}`} aria-hidden="true" /><button className="rowbtn id" aria-expanded={isOpen} aria-label={`${o.id}, ${isOpen ? "hide" : "show"} levers`} onClick={e => { e.stopPropagation(); setOpen(isOpen ? null : o.id); }}>{o.id}</button></td>
                 <td><div className="proj">{o.project_name}</div>{o.reasons[0] && <div className="reason narrow">{o.reasons[0]}</div>}</td>
                 <td className="id nowrap">{o.promise_date}</td>
                 <td className="num nowrap">{usd(o.order_value)}</td>

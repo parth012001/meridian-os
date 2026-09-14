@@ -56,11 +56,11 @@ export function Simulator({ s, owner, act }: { s: State; owner: boolean; act: Ac
       <div className="group">
         {list.map(st => {
           const isNext = st.n === next;
-          if (st.who === "you") return <span key={st.n} className={`hint ${isNext ? "next" : ""}`}><span className="n" style={{ fontSize: 11, border: "1px solid currentColor", borderRadius: "50%", width: 16, height: 16, display: "inline-grid", placeItems: "center" }}>{st.n}</span>{st.label}</span>;
+          if (st.who === "you") return <span key={st.n} className={`hint ${isNext ? "next" : ""}`}><span className="n" aria-hidden="true" style={{ fontSize: 11, border: "1px solid currentColor", borderRadius: "50%", width: 16, height: 16, display: "inline-grid", placeItems: "center" }}>{st.n}</span>{st.label}</span>;
           if (st.per) return st.per.length
-            ? st.per.map(id => <button key={st.n + id} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || (st.ownerOnly && !owner)} onClick={act(st.path!, { order_id: id })}><span className="n">{st.n}</span>{st.label} ({id})</button>)
-            : <button key={st.n} className="btn" disabled title="Appears when an order is waiting on a customer"><span className="n">{st.n}</span>{st.label}</button>;
-          return <button key={st.n} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || (st.ownerOnly && !owner)} onClick={act(st.path!, st.body)} title={st.who === "world" ? "Stands in for the outside world" : "Runs the agent seat"}><span className="n">{st.n}</span>{st.label}</button>;
+            ? st.per.map(id => <button key={st.n + id} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || (st.ownerOnly && !owner)} onClick={act(st.path!, { order_id: id })}><span className="n" aria-hidden="true">{st.n}</span>{st.label} ({id})</button>)
+            : <button key={st.n} className="btn" disabled title="Appears when an order is waiting on a customer"><span className="n" aria-hidden="true">{st.n}</span>{st.label}</button>;
+          return <button key={st.n} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || (st.ownerOnly && !owner)} onClick={act(st.path!, st.body)} title={st.who === "world" ? "Stands in for the outside world" : "Runs the agent seat"}><span className="n" aria-hidden="true">{st.n}</span>{st.label}</button>;
         })}
       </div>
       {expedited.length > 0 && <div className="group">

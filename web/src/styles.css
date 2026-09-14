@@ -227,6 +227,7 @@ td.num, th.num { text-align: right; }
 .board tr.order { cursor: pointer; }
 .board tr.order:hover td { background: var(--raised); }
 .board tr.order.open td { background: var(--raised); border-bottom-color: transparent; }
+.board .rowbtn { background: none; border: 0; padding: 0; cursor: pointer; color: inherit; }
 .board .proj { font-weight: 500; }
 .board .reason { color: var(--mute); font-size: 12px; margin-top: 2px; max-width: 52ch; }
 .mark { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 6px; }
