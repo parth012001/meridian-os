@@ -12,8 +12,10 @@ function App() {
   const [role, setRole] = useState<"owner" | "viewer">("owner");
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [charter, setCharter] = useState<string | null>(null);
+  const [trials, setTrials] = useState<any>(null);
+  const [openTrial, setOpenTrial] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const refresh = useCallback(async () => setS(await api("/state")), []);
+  const refresh = useCallback(async () => { setS(await api("/state")); setTrials(await api("/trials")); }, []);
   useEffect(() => { refresh(); const i = setInterval(refresh, 1500); return () => clearInterval(i); }, [refresh]);
   if (!s) return <div style={{ padding: 20 }}>loading…</div>;
   const act = (p: string, b?: unknown) => async () => { const r = await api(p, b ?? {}, role); setErr(r?.error ?? null); refresh(); };
@@ -108,6 +110,30 @@ function App() {
         </div>
         <h2 style={{ marginTop: 12 }}>Outbox · customer messages</h2>
         {s.messages.map((m: any) => <details key={m.id}><summary><span className="badge">{m.status}</span> <b>{m.kind}</b> → {m.to_contact} · {m.subject}</summary><pre>{m.body}</pre></details>)}
+      </section>
+
+      <section className="wide">
+        <h2>Trials · the org on probation: repeated live runs, graded by code, plus red-team scenarios</h2>
+        {trials && <>
+          <div className="row" style={{ marginBottom: 8 }}>
+            {trials.scenarios.map((sc: any) => <button key={sc.id} disabled={s.busy || role !== "owner"} title={sc.why} onClick={act("/trials/run", { only: sc.id, n: 1 })}>▶ {sc.title}</button>)}
+            <button className="primary" disabled={s.busy || role !== "owner"} onClick={act("/trials/run", { n: 1 })}>▶ Run all</button>
+            <span className="mute">each run resets the World, plays the owner and the customer, then grades the ledger</span>
+          </div>
+          {trials.scorecard.length > 0 && <table style={{ marginBottom: 8 }}><thead><tr><th>scenario</th><th>mode</th><th>reps</th><th>passed</th><th>avg time</th><th>tokens</th><th>checks failing</th></tr></thead><tbody>
+            {trials.scorecard.map((r: any) => { const failing = Object.entries<any>(r.checks).filter(([, v]) => v.pass < v.total); return <tr key={r.scenario + r.mode}>
+              <td>{r.scenario}</td><td className="mono">{r.mode}</td><td>{r.reps}</td>
+              <td><span style={{ color: r.passed === r.reps ? "var(--ok)" : "var(--bad)" }}>{r.passed}/{r.reps}</span></td>
+              <td>{(r.avg_ms / 1000).toFixed(1)}s</td><td>{r.tokens.toLocaleString()}</td>
+              <td className="mute">{failing.length ? failing.map(([k, v]) => `${k} (${v.pass}/${v.total}): ${v.lastFail}`).join("; ") : "none"}</td>
+            </tr>; })}
+          </tbody></table>}
+          {trials.recent.slice(0, 8).map((t: any) => <details key={t.id} open={openTrial === t.id} onToggle={(e: any) => setOpenTrial(e.target.open ? t.id : null)}>
+            <summary><span className="badge" style={{ color: t.passed ? "var(--ok)" : "var(--bad)" }}>{t.passed ? "PASS" : "FAIL"}</span> <b>{t.scenario}</b> · {t.summary} · {(t.duration_ms / 1000).toFixed(1)}s · {t.runs} agent runs · <span className="mono">{t.mode}</span> · {t.started_at.slice(11, 19)}</summary>
+            <table><tbody>{t.checks.map((c: any) => <tr key={c.id}><td style={{ width: 20 }}>{c.pass ? "✓" : "✗"}</td><td className="mono">{c.id}</td><td className="mute">{c.detail}</td></tr>)}</tbody></table>
+          </details>)}
+          {trials.recent.length === 0 && <div className="mute">No trials yet. Run one.</div>}
+        </>}
       </section>
 
       <section>

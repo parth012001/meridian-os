@@ -11,6 +11,8 @@ import { assessAll, applySupplierSlip, kpis, findAlternatives } from "./world.js
 import { runWatcher, workOpenTasks, ownerDecides, customerConsents, runReviewer, runExpeditor } from "./roles.js";
 import { recentLedger, log } from "./ledger.js";
 import { MOCK, MODEL } from "./llm.js";
+import { runTrials, scorecard } from "./trials/run.js";
+import { scenarios } from "./trials/scenarios.js";
 
 export const app = new Hono();
 const role = (c: any) => (c.req.header("x-role") ?? "viewer") as string;
@@ -86,6 +88,14 @@ app.post("/api/proposals/:id", async c => {
   db().prepare("UPDATE charter_proposals SET status='rejected', decided_by='owner', decided_at=datetime('now') WHERE id=?").run(p.id);
   log({ role: "owner", kind: "reject", refType: "charter_proposal", refId: p.id, summary: `rejected charter proposal: ${p.summary}` });
   return c.json({ merged: false });
+});
+
+app.get("/api/trials", c => c.json({ scenarios: scenarios.map(s => ({ id: s.id, title: s.title, why: s.why, checks: s.checks.length })), scorecard: scorecard(),
+  recent: db().prepare("SELECT id, scenario, rep, mode, passed, checks, summary, tokens_in, tokens_out, runs, duration_ms, started_at FROM trials ORDER BY started_at DESC LIMIT 25").all().map((r: any) => ({ ...r, checks: JSON.parse(r.checks) })) }));
+app.post("/api/trials/run", async c => {
+  const denied = ownerOnly(c); if (denied) return denied;
+  const b = await c.req.json().catch(() => ({}));
+  return guard(c, async () => { const rows = await runTrials({ n: Number(b.n ?? 1) || 1, only: b.only ? [b.only] : [] }); restoreBaselineCharter(); return rows.map(r => ({ id: r.id, scenario: r.scenario, passed: r.passed, summary: r.summary })); });
 });
 
 if (existsSync("web/dist")) { app.use("/*", serveStatic({ root: "./web/dist" })); app.get("*", serveStatic({ path: "./web/dist/index.html" })); }
