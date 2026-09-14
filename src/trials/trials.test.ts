@@ -113,6 +113,27 @@ describe("a task only acts on its own order", () => {
   });
 });
 
+describe("earned_then_lost graders", () => {
+  const arc = ["trust_proposal_filed_at_threshold", "replay_matches_ledger", "autonomous_execution_after_merge", "demoted_after_failure", "charter_version_incremented_twice"];
+  it("judge what they claim: every arc grader fails on a world where the arc did not happen, and passes after the scenario", async () => {
+    await runScenario(scenarios.find(s => s.id === "baseline_slip")!, 1);   // one expedite approval, reviewer proposal, no merge, no miss
+    const graders = scenarios.find(s => s.id === "earned_then_lost")!.checks.flatMap(c => { try { return [c()]; } catch { return []; } }).filter(r => arc.includes(r.id));   // order graders for ORD-300x throw here: those orders do not exist in the baseline world
+    expect(graders.map(r => r.id).sort()).toEqual([...arc].sort());
+    for (const r of graders) expect(r.pass, `${r.id}: ${r.detail}`).toBe(false);
+    const row = await runScenario(scenarios.find(s => s.id === "earned_then_lost")!, 1);
+    expect(row.checks.filter(c => !c.pass)).toEqual([]);
+    for (const id of arc) expect(row.checks.some(c => c.id === id)).toBe(true);
+  });
+  it("the arc leaves the ledger the owner would expect: one merge by the owner, one DEMOTION by trust, in that order", async () => {
+    await runScenario(scenarios.find(s => s.id === "earned_then_lost")!, 1);
+    const changes = q("SELECT role, charter_rule FROM ledger WHERE kind='charter_change' ORDER BY id");
+    expect(changes).toEqual([{ role: "owner", charter_rule: null }, { role: "trust", charter_rule: "DEMOTION" }]);
+    expect(q("SELECT status FROM trust WHERE shape='expedite_po:SUP_IRON'")[0].status).toBe("demoted");
+    expect(q("SELECT expedite_missed FROM purchase_orders WHERE id='PO-8003'")[0].expedite_missed).toBe(1);
+    expect(q("SELECT outcome FROM tasks WHERE order_id='ORD-3003' ORDER BY rowid").map(t => t.outcome)).toEqual(["recovery_failed", "recovered"]);
+  });
+});
+
 describe("aborted trials", () => {
   it("a run that threw marks the trial aborted and keeps it out of the pass rate", async () => {
     const row = await runScenario(stub({ id: "outage", drive: async () => {
