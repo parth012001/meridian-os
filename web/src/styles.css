@@ -245,7 +245,8 @@ td.num, th.num { text-align: right; }
 
 /* ── ledger ───────────────────────────────────────────── */
 .filters { display: flex; gap: 4px; flex-wrap: wrap; }
-.ledger { max-height: 640px; overflow: auto; border-top: 1px solid var(--line); }
+.panel.fill { display: flex; flex-direction: column; }
+.ledger { flex: 1; min-height: 360px; max-height: 900px; overflow: auto; border-top: 1px solid var(--line); }
 .block { border-bottom: 1px solid var(--line-2); padding: 8px 0 8px; }
 .block .who { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .block .who b { font-weight: 600; font-size: 13px; }

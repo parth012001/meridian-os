@@ -13,13 +13,13 @@ const FOLDED = new Set(["tool_call", "llm"]);
 interface Block { role: string; ts: string; rows: LedgerRow[] }
 
 /** Consecutive rows from the same role read as one block (one run, one watch cycle, one owner decision). Rows arrive newest first. */
-function blocks(rows: LedgerRow[]): Block[] {
+function blocks(rows: LedgerRow[], foldGate: boolean): Block[] {
   const out: Block[] = [];
   for (const r of rows) {
     const last = out[out.length - 1];
-    // The gate's verdict belongs to the run that proposed the action, so a gate row never starts its own block.
-    if (last && (last.role === r.role || r.role === "gate")) last.rows.push(r);
-    else if (last && last.role === "gate") { last.role = r.role; last.rows.push(r); }
+    // In the full view the gate's verdict sits inside the run that proposed the action. Under a filter the neighbours are gone, so the gate keeps its own block.
+    if (last && (last.role === r.role || (foldGate && r.role === "gate"))) last.rows.push(r);
+    else if (last && foldGate && last.role === "gate") { last.role = r.role; last.rows.push(r); }
     else out.push({ role: r.role, ts: r.ts, rows: [r] });
   }
   return out;
@@ -47,8 +47,8 @@ function BlockView({ b }: { b: Block }) {
 export function Ledger({ s }: { s: State }) {
   const [filter, setFilter] = useState<keyof typeof FILTERS>("everything");
   const rows = useMemo(() => { const k = FILTERS[filter]; return k ? s.ledger.filter(l => k.includes(l.kind)) : s.ledger; }, [s.ledger, filter]);
-  const groups = useMemo(() => blocks(rows), [rows]);
-  return <section className="panel" aria-label="Ledger">
+  const groups = useMemo(() => blocks(rows, filter === "everything"), [rows, filter]);
+  return <section className="panel fill" aria-label="Ledger">
     <div className="head"><h2>Ledger</h2><span className="sub">every observation, verdict, approval and action, newest first</span><span className="spacer" />
       <div className="filters" role="tablist">{Object.keys(FILTERS).map(f => <button key={f} role="tab" aria-selected={filter === f} className={`stamp ${filter === f ? "" : "quiet"}`} onClick={() => setFilter(f)}>{f}</button>)}</div>
     </div>
