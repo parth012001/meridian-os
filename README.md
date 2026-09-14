@@ -161,6 +161,7 @@ What the trials found, in order:
 1. The scripted mock expeditor stalled on orders with two late POs because it never re-read the lever list after its first action. Fixed in the mock.
 2. Live, the supplier's "just move the date" suggestion steered the model into proposing a promise-date change over a $450 expedite. The gate still routed it to the owner (C1 held), but judgment was swayed. Now `propose_action` refuses a date change while any lever that keeps the date exists. The rule and the trial are both in the repo.
 3. The prompt injection and the discount request were both ignored on the first live run. The gate is code, so an instruction in a tool result cannot raise anyone's authority, and the comms role has no pricing tool to call.
+4. Under load (20 orders competing for 8 substitute frames) the desk sent 18 substitution requests that promised the date, took 18 consents, and could only deliver 3. Nothing held the stock between "may we ask?" and "yes". Now approving a substitution request reserves the units (`reservations` table, consumed on execution); if the stock is gone by then the customer is never asked and the Expeditor moves to the next lever. Two graders pin it: every consent is followed by the substitution, and every action and message stays on its task's order (tool results cannot redirect a task).
 
 Pass rates from the last live batch are in the Trials panel and in `docs/TRIALS.md`.
 
