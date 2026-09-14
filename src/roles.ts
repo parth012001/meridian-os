@@ -1,0 +1,92 @@
+// The live roles. Watcher is deterministic (procedures beat judgment); the others are LLM loops over Charter-scoped tools.
+import { db, uid, nowIso } from "./db.js";
+import { log } from "./ledger.js";
+import { assessAll, getOrder, assessOrder, recordEvent } from "./world.js";
+import { runRole } from "./runRole.js";
+import { decideApproval, executeAction } from "./actions.js";
+
+/** Ops Manager: scan every open order, open one task per at-risk order that has no open task. */
+export function runWatcher() {
+  const opened: string[] = []; const seen: string[] = [];
+  for (const r of assessAll()) {
+    if (r.daysLate <= 0) continue;
+    seen.push(r.order.id);
+    const existing = db().prepare("SELECT id FROM tasks WHERE order_id=? AND status IN ('open','in_progress','awaiting_approval','escalated')").get(r.order.id);
+    if (existing) continue;
+    const id = uid("task");
+    db().prepare("INSERT INTO tasks (id, order_id, opened_by, assigned_role, risk_score, days_late, reason) VALUES (?,?,?,?,?,?,?)")
+      .run(id, r.order.id, "ops_manager", "expeditor", r.score, r.daysLate, r.reasons.join(" | "));
+    log({ role: "ops_manager", kind: "observe", refType: "task", refId: id, summary: `at-risk: ${r.order.id} ${r.daysLate}d late, $${r.order.order_value} at stake, score ${r.score}. ${r.reasons[0]}` });
+    opened.push(id);
+  }
+  log({ role: "ops_manager", kind: "observe", summary: `watch cycle: ${seen.length} at-risk order(s), ${opened.length} new task(s)` });
+  return { atRisk: seen, opened };
+}
+
+export async function runExpeditor(taskId: string, extra = "") {
+  const t = db().prepare("SELECT * FROM tasks WHERE id=?").get(taskId) as any; if (!t) throw new Error("no task");
+  db().prepare("UPDATE tasks SET status='in_progress' WHERE id=?").run(taskId);
+  const r = await runRole("expeditor", `Recover order ${t.order_id}. It is ${t.days_late} day(s) late. Reason: ${t.reason}. ${extra}`.trim(), { taskId, orderId: t.order_id });
+  const after = db().prepare("SELECT status FROM tasks WHERE id=?").get(taskId) as any;
+  if (after.status === "in_progress") db().prepare("UPDATE tasks SET status='open' WHERE id=?").run(taskId);
+  return r;
+}
+
+export async function runComms(orderId: string, kind: "status_update" | "substitution_request" | "delay_notice", taskId?: string, context = "") {
+  return runRole("customer_comms", `Write a ${kind} to the customer for order ${orderId}. kind: ${kind}. ${context}`.trim(), { taskId, orderId });
+}
+
+export async function runReviewer() {
+  return runRole("reviewer", "Weekly review: call read_ledger_stats, then either file exactly one Charter change with propose_charter_diff (path + value + evidence) or state in one line that the evidence does not justify a change. A proposal that is only described in text does not exist.", {});
+}
+
+/** Owner decision handler. Approval of an action also covers the customer notice it implies (C5 satisfied by the same signature). */
+export async function ownerDecides(approvalId: string, decision: "approved" | "rejected", note?: string) {
+  const res = decideApproval(approvalId, decision, "owner", note);
+  if ("already" in res) return res;
+  const a = res.action;
+  if (decision === "rejected") {
+    await runExpeditor(a.task_id, `The owner REJECTED ${a.type}${note ? ` ("${note}")` : ""}. Excluded levers: ${a.type}. Find another way or escalate.`);
+    return { rerun: true };
+  }
+  if (a.type === "substitute_sku") {
+    // owner authorised asking the customer; send the request, then wait for consent
+    await runComms(a.order_id, "substitution_request", a.task_id, `Owner approved asking for substitution ${JSON.stringify(JSON.parse(a.params))}.`);
+    db().prepare("UPDATE messages SET status='sent', sent_at=? WHERE order_id=? AND kind='substitution_request' AND status='pending_review'").run(nowIso(), a.order_id);
+    log({ role: "system", onBehalfOf: "owner", kind: "message", refType: "order", refId: a.order_id, charterRule: "C5", summary: `substitution request released to customer under owner approval ${approvalId}` });
+    db().prepare("UPDATE tasks SET status='awaiting_customer' WHERE id=?").run(a.task_id);
+    return { awaiting: "customer_consent" };
+  }
+  if (a.type === "change_promise_date") {
+    await runComms(a.order_id, "delay_notice", a.task_id, "Owner approved the new promise date.");
+    db().prepare("UPDATE messages SET status='sent', sent_at=? WHERE order_id=? AND kind='delay_notice' AND status='pending_review'").run(nowIso(), a.order_id);
+    return { executed: res.executed };
+  }
+  if (res.executed?.gapClosed) await runComms(a.order_id, "status_update", a.task_id, "The order is back on schedule after the owner approved the recovery.");
+  return { executed: res.executed };
+}
+
+/** Simulated customer reply to a substitution request. */
+export async function customerConsents(orderId: string) {
+  const a = db().prepare("SELECT * FROM actions WHERE order_id=? AND type='substitute_sku' AND status='approved' ORDER BY created_at DESC LIMIT 1").get(orderId) as any;
+  if (!a) return { error: "no approved substitution pending consent" };
+  const p = JSON.parse(a.params);
+  recordEvent("customer_consent", { to_sku: p.to_sku, from_sku: p.from_sku, via: "email reply" }, orderId);
+  log({ role: "customer", kind: "message", refType: "order", refId: orderId, summary: `customer consented to substitution ${p.from_sku} -> ${p.to_sku}`, detail: { modality: "email" } });
+  const r = await runExpeditor(a.task_id, `Customer consent for substituting ${p.from_sku} with ${p.to_sku} is now recorded as an event. Re-propose the substitution.`);
+  const risk = assessOrder(getOrder(orderId)!);
+  if (risk.daysLate === 0) await runComms(orderId, "status_update", a.task_id, "Substitution executed with customer consent; order ships on time.");
+  return { rerun: r, daysLate: risk.daysLate };
+}
+
+export async function workOpenTasks() {
+  const tasks = db().prepare("SELECT id FROM tasks WHERE status='open' ORDER BY risk_score DESC").all() as { id: string }[];
+  const results = [];
+  for (const t of tasks) {
+    const r = await runExpeditor(t.id);
+    const task = db().prepare("SELECT * FROM tasks WHERE id=?").get(t.id) as any;
+    if (task.status === "resolved") await runComms(task.order_id, "status_update", t.id, "Recovery executed inside authority; the promise date stands.");
+    results.push({ task: t.id, ...r, status: task.status });
+  }
+  return results;
+}
