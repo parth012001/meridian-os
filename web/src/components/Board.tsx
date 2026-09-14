@@ -21,7 +21,7 @@ function taskTone(o: BoardRow) {
   if (t.status === "escalated" || (t.outcome ?? "").includes("failed")) return "bad";
   return o.days_late ? (t.status === "open" ? "bad" : "warn") : "ok";
 }
-const taskLabel = (o: BoardRow) => o.task ? `${words(o.task.status)}${o.task.outcome ? `, ${o.task.outcome}` : ""}` : "";
+const taskLabel = (o: BoardRow) => o.task ? `${words(o.task.status)}${o.task.outcome ? `, ${words(o.task.outcome)}` : ""}` : "";
 
 function Drawer({ id }: { id: string }) {
   const [levers, setLevers] = useState<Lever[] | null>(null);
