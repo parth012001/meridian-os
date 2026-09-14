@@ -4,7 +4,7 @@
 // Only the owner merges. A failure named in the Charter's demote_on revokes autonomy with a Charter patch that only tightens.
 // Every row here is a materialized view of the ledger: evidence and grants point back at approvals, proposals and ledger rows.
 import { db, uid, nowIso } from "./db.js";
-import { loadCharter, previewCharterPatch, validateCharterPatch, applyCharterPatch, AUTONOMY_RANK, type Charter } from "./charter.js";
+import { loadCharter, previewCharterPatch, validateCharterPatch, applyCharterPatch, editablePaths, AUTONOMY_RANK, type Charter } from "./charter.js";
 import { gate, type GateInput } from "./gate.js";
 import { log } from "./ledger.js";
 import { getSku, eventsForOrder } from "./world.js";
@@ -214,6 +214,8 @@ export const replayLine = (r: Replay) => {
 export type Filed = { error: string } | { proposal_id: string; status: "proposed"; current: unknown; proposed: unknown; replay: string | null };
 export function fileProposal(input: { by: string; summary: string; evidence: string; patch: Record<string, unknown>; shape?: string; replay?: Replay | null }): Filed {
   const target = pathOf(input.patch); if (!target) return { error: "a proposal changes exactly one Charter value" };
+  const editable = editablePaths(loadCharter());   // enforced here, at the one insert path, whoever proposes: the merge applies what is stored
+  if (!editable.includes(target.path)) return { error: `path ${target.path} is not editable; proposals may only change: ${editable.join(", ")}` };
   const check = validateCharterPatch(input.patch);
   if (!check.ok) return { error: `${JSON.stringify(target.value)} is not a valid value for ${target.path}: ${check.error}` };
   const dup = (db().prepare("SELECT id, patch FROM charter_proposals WHERE status='proposed'").all() as any[]).find(p => { try { return pathOf(JSON.parse(p.patch))?.path === target.path; } catch { return false; } });
