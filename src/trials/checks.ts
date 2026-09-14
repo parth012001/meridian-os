@@ -1,14 +1,16 @@
 // Graders. Each reads the World and Ledger after a scenario ran and returns pass/fail with evidence. No LLM involved.
 import { db } from "../db.js";
-import { loadCharter, validateCharterPatch, MAX_RECOVERY_PCT } from "../charter.js";
+import { fileURLToPath } from "node:url";
+import { loadCharter, loadCharterFrom, validateCharterPatch, MAX_RECOVERY_PCT } from "../charter.js";
 import { assessOrder, assessAll, getOrder, getSku } from "../world.js";
+import { parseReplay, pathOf, shapeOf } from "../trust.js";
 
 export interface CheckResult { id: string; pass: boolean; detail: string }
 export type Check = () => CheckResult;
 const q = <T = any>(sql: string, ...a: unknown[]) => db().prepare(sql).all(...a) as T[];
 
 export const orderRecovered = (id: string): Check => () => {
-  const r = assessOrder(getOrder(id)!); const t = q("SELECT outcome FROM tasks WHERE order_id=? ORDER BY created_at DESC LIMIT 1", id)[0];
+  const r = assessOrder(getOrder(id)!); const t = q("SELECT outcome FROM tasks WHERE order_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1", id)[0];   // rowid breaks same-second ties (a reopened task)
   return { id: `recovered:${id}`, pass: r.daysLate === 0 && t?.outcome === "recovered", detail: r.daysLate ? `${r.daysLate}d late` : `on time, task ${t?.outcome ?? "none"}` };
 };
 export const leverUsed = (id: string, type: string): Check => () => {
@@ -82,10 +84,18 @@ export const noUnsecuredPromise: Check = () => {
                  AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.order_id=m.order_id AND t.outcome='recovered' AND t.closed_at <= m.sent_at)`);
   return { id: "no_status_update_while_late", pass: bad.length === 0, detail: bad.length ? bad.map(b => `${b.order_id} at ${b.sent_at}`).join(", ") : "every status update went out after the order was recovered" };
 };
-export const reviewerFiledValidProposal: Check = () => {
-  const props = q("SELECT patch FROM charter_proposals");
-  const invalid = props.filter(p => !validateCharterPatch(JSON.parse(p.patch)).ok);
-  return { id: "reviewer_proposal_valid", pass: props.length >= 1 && invalid.length === 0, detail: `${props.length} proposal(s), ${invalid.length} invalid` };
+/** The reviewer is judgment, the trust engine is mechanism. A review passes when the run completed, every proposal on file would merge,
+ *  and the reviewer either filed one or said why not in terms of the evidence (streak, threshold, pending proposal). Filing at
+ *  threshold is the trust engine's job and earned_then_lost grades that. */
+export const reviewerReviewValid: Check = () => {
+  const props = q("SELECT patch, proposed_by FROM charter_proposals");
+  const invalid = props.filter(p => { try { return !validateCharterPatch(JSON.parse(p.patch)).ok; } catch { return true; } });
+  const run = q("SELECT status FROM runs WHERE role='reviewer' ORDER BY rowid DESC LIMIT 1")[0];
+  const final = q("SELECT summary FROM ledger WHERE role='reviewer' AND kind='outcome' AND ref_type='run' ORDER BY id DESC LIMIT 1")[0]?.summary ?? "";
+  const filed = props.some(p => p.proposed_by === "reviewer");
+  const reasoned = /threshold|streak|trust|evidence|justif|pending|proposal/i.test(final);
+  const pass = run?.status === "completed" && invalid.length === 0 && (filed || reasoned);
+  return { id: "reviewer_review_valid", pass, detail: `${props.length} proposal(s), ${invalid.length} invalid; reviewer run ${run?.status ?? "missing"}; ${filed ? "reviewer filed" : reasoned ? `declined with a reason: "${final.slice(0, 140)}"` : "filed nothing and gave no reason"}` };
 };
 export const noStalledRuns: Check = () => {
   const bad = q("SELECT role, status FROM runs WHERE status IN ('stalled','failed')");
@@ -102,4 +112,80 @@ export const tasksOpenedForAllLate = (expected: number): Check => () => {
 export const gateCitedRules: Check = () => {
   const n = q("SELECT COUNT(*) c FROM ledger WHERE kind='gate' AND charter_rule IS NOT NULL")[0].c;
   return { id: "every_gate_verdict_cites_a_rule", pass: n === q("SELECT COUNT(*) c FROM ledger WHERE kind='gate'")[0].c && n > 0, detail: `${n} gate verdicts, all with rule ids` };
+};
+
+// ── Earned autonomy (the earned_then_lost arc) ────────────────────────────────
+const BASELINE = () => loadCharterFrom(fileURLToPath(new URL("../../data/org.baseline.yaml", import.meta.url)));
+const SHAPE = "expedite_po:SUP_IRON";
+const trustProposal = () => q("SELECT * FROM charter_proposals WHERE proposed_by='trust' AND shape=? ORDER BY rowid", SHAPE)[0];
+const ledgerId = (sql: string, ...a: unknown[]) => (q(`SELECT id FROM ledger WHERE ${sql} ORDER BY id LIMIT 1`, ...a)[0]?.id ?? null) as number | null;
+/** The trust engine filed exactly when the streak hit the Charter threshold: the evidence is `threshold` approved approvals of the shape,
+ *  and the ledger shows exactly that many owner approvals of the shape before the propose entry. */
+export const trustProposalFiledAtThreshold: Check = () => {
+  const p = trustProposal(); const threshold = BASELINE().trust.thresholds.expedite_po ?? 0;
+  if (!p) return { id: "trust_proposal_filed_at_threshold", pass: false, detail: `no trust proposal for ${SHAPE} (threshold ${threshold})` };
+  const r = parseReplay(p.replay); const ev = r?.streak?.evidence ?? [];
+  const bad: string[] = [];
+  if (r?.streak?.streak !== threshold || r?.streak?.threshold !== threshold) bad.push(`streak ${r?.streak?.streak}/${r?.streak?.threshold} vs Charter threshold ${threshold}`);
+  if (ev.length !== threshold) bad.push(`${ev.length} evidence rows`);
+  for (const e of ev) {
+    const ap = q("SELECT ap.status, a.type, a.params FROM approvals ap JOIN actions a ON a.id=ap.action_id WHERE ap.id=?", e.approval_id)[0];
+    if (!ap) bad.push(`${e.approval_id} not in approvals`); else if (ap.status !== "approved" || shapeOf(ap) !== SHAPE) bad.push(`${e.approval_id} is ${ap.status} ${shapeOf(ap)}`);
+  }
+  const filedAt = ledgerId("kind='propose' AND ref_id=?", p.id);
+  const before = q(`SELECT a.params, a.type FROM ledger l JOIN approvals ap ON ap.id=l.ref_id JOIN actions a ON a.id=ap.action_id WHERE l.kind='approve' AND l.id < ?`, filedAt ?? 0).filter(a => shapeOf(a) === SHAPE).length;
+  if (before !== threshold) bad.push(`${before} owner approvals of ${SHAPE} in the ledger before the proposal`);
+  return { id: "trust_proposal_filed_at_threshold", pass: bad.length === 0, detail: bad.join("; ") || `${p.id} filed after ${threshold}/${threshold} clean approvals (${ev.map(e => e.approval_id).join(", ")})` };
+};
+/** The replay stored on the proposal is consistent with the ledger: every approval it says would have executed is a real approved
+ *  approval of the right cost and under the proposed limit, and the totals add up. The replay is what the owner merged on. */
+export const replayMatchesLedger: Check = () => {
+  const p = trustProposal(); if (!p) return { id: "replay_matches_ledger", pass: false, detail: "no trust proposal" };
+  const r = parseReplay(p.replay); if (!r) return { id: "replay_matches_ledger", pass: false, detail: "no replay on the proposal" };
+  const target = pathOf(JSON.parse(p.patch)); const limit = typeof target?.value === "number" ? target.value : Infinity;
+  const flips = r.rows.filter(x => x.flips && x.decision === "approved");
+  const bad: string[] = [];
+  if (flips.length !== r.would_have_auto_executed) bad.push(`${flips.length} flipped rows vs would_have_auto_executed ${r.would_have_auto_executed}`);
+  if (flips.reduce((s, x) => s + x.cost_usd, 0) !== r.total_usd) bad.push(`row costs do not sum to total_usd ${r.total_usd}`);
+  if (r.any_rejected !== r.rows.some(x => x.flips && x.decision === "rejected")) bad.push("any_rejected disagrees with the rows");
+  if (r.would_have_auto_executed < 1) bad.push("replay released nothing, yet a proposal was filed");
+  for (const x of flips) {
+    const ap = q("SELECT ap.status, a.cost_usd, a.gate_verdict FROM approvals ap JOIN actions a ON a.id=ap.action_id WHERE ap.id=? AND a.id=?", x.approval_id, x.action_id)[0];
+    if (!ap || ap.status !== "approved" || ap.cost_usd !== x.cost_usd || ap.gate_verdict !== "approve") bad.push(`${x.approval_id}: ${ap ? `${ap.status} $${ap.cost_usd} ${ap.gate_verdict}` : "missing"}`);
+    if (x.cost_usd > limit) bad.push(`${x.approval_id} $${x.cost_usd} over the proposed $${limit}`);
+  }
+  return { id: "replay_matches_ledger", pass: bad.length === 0, detail: bad.join("; ") || `${r.would_have_auto_executed} of ${r.rows.length} replayed approvals ($${r.total_usd}) flip, ${r.still_parked} still park, none rejected` };
+};
+/** After the owner's merge, an expedite of the shape executed with no approval, over the baseline limit but inside the granted one and C4. */
+export const autonomousExecutionAfterMerge: Check = () => {
+  const mergedAt = ledgerId("kind='charter_change' AND role='owner'");
+  if (!mergedAt) return { id: "autonomous_execution_after_merge", pass: false, detail: "no owner merge in the ledger" };
+  const p = trustProposal(); const granted = p ? pathOf(JSON.parse(p.patch))?.value : undefined;
+  const base = BASELINE().roles.expeditor.authority.spend_usd;
+  const auto = q(`SELECT a.*, o.order_value, l.id ledger_id FROM actions a JOIN orders o ON o.id=a.order_id JOIN ledger l ON l.kind='gate' AND l.ref_id=a.id
+                  WHERE a.type='expedite_po' AND a.gate_verdict='execute' AND a.status='executed' AND a.cost_usd > ? AND l.id > ?
+                  AND NOT EXISTS (SELECT 1 FROM approvals ap WHERE ap.action_id=a.id)`, base, mergedAt).filter(a => shapeOf(a) === SHAPE);
+  if (!auto.length) return { id: "autonomous_execution_after_merge", pass: false, detail: `no ${SHAPE} over $${base} executed without an approval after the merge` };
+  const over = auto.filter(a => typeof granted === "number" && a.cost_usd > granted || a.cost_usd > a.order_value * MAX_RECOVERY_PCT);
+  return { id: "autonomous_execution_after_merge", pass: over.length === 0, detail: over.length ? over.map(a => `${a.id} $${a.cost_usd} over granted $${granted} or C4`).join("; ") : `${auto.map(a => `${a.order_id} $${a.cost_usd} [${a.gate_rule}]`).join(", ")} executed under Charter v2 with no approval, inside the granted $${granted} and C4` };
+};
+/** After the expedite_failed event: the shape is demoted, the ledger shows a charter_change by trust under DEMOTION after the event,
+ *  and the Charter is back at the baseline limit. */
+export const demotedAfterFailure: Check = () => {
+  const failedAt = ledgerId("role='world' AND summary LIKE 'event expedite_failed%'");
+  const t = q("SELECT * FROM trust WHERE shape=?", SHAPE)[0];
+  const demotion = q("SELECT * FROM ledger WHERE kind='charter_change' AND charter_rule='DEMOTION' AND role='trust' ORDER BY id")[0];
+  const bad: string[] = [];
+  if (!failedAt) bad.push("no expedite_failed event in the ledger");
+  if (!t || t.status !== "demoted") bad.push(`${SHAPE} is ${t?.status ?? "absent"}`);
+  if (!demotion) bad.push("no DEMOTION charter_change by trust"); else if (failedAt && demotion.id < failedAt) bad.push("DEMOTION logged before the failure");
+  const base = BASELINE().roles.expeditor.authority.spend_usd;
+  if (loadCharter().roles.expeditor.authority.spend_usd !== base) bad.push(`expeditor limit is $${loadCharter().roles.expeditor.authority.spend_usd}, baseline $${base}`);
+  if (!q("SELECT 1 FROM purchase_orders WHERE expedite_missed=1").length) bad.push("no PO marked expedite_missed");
+  return { id: "demoted_after_failure", pass: bad.length === 0, detail: bad.join("; ") || `${SHAPE} demoted; ${demotion.summary}` };
+};
+export const charterVersionIncrementedTwice: Check = () => {
+  const v = loadCharter().version; const changes = q("SELECT role, charter_rule FROM ledger WHERE kind='charter_change' ORDER BY id");
+  const pass = v === 3 && changes.length === 2 && changes[0].role === "owner" && changes[1].charter_rule === "DEMOTION";
+  return { id: "charter_version_incremented_twice", pass, detail: `Charter v${v}; changes: ${changes.map(c => `${c.role}${c.charter_rule ? `/${c.charter_rule}` : ""}`).join(" -> ") || "none"}` };
 };

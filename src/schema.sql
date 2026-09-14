@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id),
   order_id TEXT NOT NULL REFERENCES orders(id), sku_id TEXT NOT NULL REFERENCES skus(id), qty INTEGER NOT NULL,
   placed_at TEXT NOT NULL, acked_ship_date TEXT NOT NULL, current_ship_date TEXT NOT NULL,
-  transit_days INTEGER NOT NULL DEFAULT 3, status TEXT NOT NULL DEFAULT 'open', expedited INTEGER NOT NULL DEFAULT 0
+  transit_days INTEGER NOT NULL DEFAULT 3, status TEXT NOT NULL DEFAULT 'open', expedited INTEGER NOT NULL DEFAULT 0,
+  pre_expedite_ship_date TEXT, expedite_missed INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL DEFAULT (datetime('now')),
@@ -74,7 +75,20 @@ CREATE TABLE IF NOT EXISTS ledger (
 CREATE TABLE IF NOT EXISTS charter_proposals (
   id TEXT PRIMARY KEY, proposed_by TEXT NOT NULL, summary TEXT NOT NULL, evidence TEXT NOT NULL,
   patch TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'proposed', decided_by TEXT, decided_at TEXT,
+  shape TEXT, replay TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- Trust is earned per action SHAPE (action type, optionally per supplier), never per agent. Every shape starts supervised;
+-- consecutive clean owner approvals build a streak toward the Charter threshold (snapshotted here at creation so a later
+-- Charter edit cannot move the goalposts); a rejection resets it; a failure named in the Charter's demote_on revokes it.
+-- evidence and grant point back into approvals, charter_proposals and the ledger.
+CREATE TABLE IF NOT EXISTS trust (
+  shape TEXT PRIMARY KEY, action_type TEXT NOT NULL,
+  streak INTEGER NOT NULL DEFAULT 0, threshold INTEGER NOT NULL,
+  total_approved INTEGER NOT NULL DEFAULT 0, total_rejected INTEGER NOT NULL DEFAULT 0, total_failed INTEGER NOT NULL DEFAULT 0, total_autonomous INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'supervised',
+  evidence TEXT NOT NULL DEFAULT '[]', grant TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, role TEXT NOT NULL, task_id TEXT, status TEXT NOT NULL DEFAULT 'running',

@@ -9,7 +9,7 @@ export function addDays(iso: string, n: number): string {
 export const daysBetween = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
 
 export interface Order { id: string; customer_id: string; project_name: string; promise_date: string; status: string; order_value: number; margin_pct: number; ship_policy: "complete" | "partial_ok"; branch: string; shipped_at: string | null; }
-export interface PO { id: string; supplier_id: string; order_id: string; sku_id: string; qty: number; placed_at: string; acked_ship_date: string; current_ship_date: string; transit_days: number; status: string; expedited: number; }
+export interface PO { id: string; supplier_id: string; order_id: string; sku_id: string; qty: number; placed_at: string; acked_ship_date: string; current_ship_date: string; transit_days: number; status: string; expedited: number; pre_expedite_ship_date: string | null; expedite_missed: number; }
 export interface Sku { id: string; supplier_id: string; category: string; description: string; unit_cost: number; list_price: number; fire_rating: string | null; substitutable_group: string | null; }
 export interface Supplier { id: string; name: string; product_lines: string; standard_lead_days: number; expedite_fee_usd: number; expedite_lead_days: number; }
 
@@ -41,8 +41,9 @@ export function reserveStock(orderId: string, skuId: string, branch: string, qty
 export const supplierReplyOverride: Record<string, string> = {};
 export const clearSupplierReplyOverrides = () => { for (const k of Object.keys(supplierReplyOverride)) delete supplierReplyOverride[k]; };
 
-/** Simulated supplier policy: Oakridge will not Fast Track fire-rated wood doors. One rule, used by the lever enumerator and the supplier channel alike. */
-export const expediteEligible = (sku: Sku, sup: Supplier) => !sku.fire_rating || sup.id !== "SUP_OAK";
+/** Simulated supplier policy: Oakridge will not Fast Track fire-rated wood doors, and a PO whose Fast Track the supplier already
+ *  missed is not offered it twice. One rule, used by the lever enumerator and the supplier channel alike. */
+export const expediteEligible = (sku: Sku, sup: Supplier, po?: Pick<PO, "expedite_missed">) => !po?.expedite_missed && (!sku.fire_rating || sup.id !== "SUP_OAK");
 
 /** Expected arrival at our dock for a PO. */
 export const poArrival = (po: PO) => addDays(po.current_ship_date, po.transit_days);
@@ -77,6 +78,20 @@ export function applySupplierSlip(supplierId: string, category: string, days: nu
   return orderIds;
 }
 
+/** The supplier missed the Fast Track it sold us: the PO falls back to the ship date it had before the expedite, the order is late
+ *  again, and this PO is never offered an expedite twice. The trust engine treats the event as a failure of the expedite shape. */
+export function applyExpediteMiss(poId: string) {
+  const po = db().prepare("SELECT * FROM purchase_orders WHERE id=?").get(poId) as PO | undefined;
+  if (!po) return { error: `unknown PO ${poId}` };
+  if (!po.expedited || po.status !== "open") return { error: `${poId} is not an open expedited PO; nothing to miss` };
+  if (!po.pre_expedite_ship_date) return { error: `${poId} has no pre-expedite ship date on record; refusing to guess` };
+  db().prepare("UPDATE purchase_orders SET current_ship_date=pre_expedite_ship_date, pre_expedite_ship_date=NULL, expedited=0, expedite_missed=1 WHERE id=?").run(poId);
+  const order = getOrder(po.order_id)!; const risk = assessOrder(order);
+  const payload = { po_id: poId, supplier_id: po.supplier_id, missed_ship_date: po.current_ship_date, ship_date_now: po.pre_expedite_ship_date, days_late: risk.daysLate };
+  const event_id = recordEvent("expedite_failed", payload, po.order_id);
+  return { po_id: poId, order_id: po.order_id, supplier_id: po.supplier_id, days_late: risk.daysLate, event_id };
+}
+
 // ── Recovery levers ───────────────────────────────────────────────────────────
 export type LeverType = "transfer_stock" | "expedite_po" | "partial_ship" | "substitute_sku" | "change_promise_date";
 export interface Lever {
@@ -107,7 +122,7 @@ export function findAlternatives(orderId: string): Lever[] {
       }
     }
     // 2. expedite with the supplier (only when the supplier will honour it)
-    if (expediteEligible(sku, sup)) {
+    if (expediteEligible(sku, sup, po)) {
       const expArrival = addDays(addDays(t, sup.expedite_lead_days), po.transit_days);
       out.push({ type: "expedite_po", po_id: po.id, params: { po_id: po.id, supplier_id: sup.id, fee_usd: sup.expedite_fee_usd, new_ship_date: addDays(t, sup.expedite_lead_days) },
         cost_usd: sup.expedite_fee_usd, new_arrival: expArrival, days_saved: daysBetween(expArrival, poArrival(po)), closes_gap: expArrival <= order.promise_date,
@@ -162,7 +177,8 @@ export function applyLever(lever: Lever, orderId: string) {
     }
     case "expedite_po": {
       const p = lever.params as any;
-      d.prepare("UPDATE purchase_orders SET current_ship_date=?, expedited=1 WHERE id=?").run(p.new_ship_date, lever.po_id);
+      // SET expressions read the pre-update row, so pre_expedite_ship_date keeps the date we are expediting away from (a miss restores it)
+      d.prepare("UPDATE purchase_orders SET pre_expedite_ship_date=current_ship_date, current_ship_date=?, expedited=1 WHERE id=?").run(p.new_ship_date, lever.po_id);
       recordEvent("po_expedited", p, orderId); break;
     }
     case "substitute_sku": {
