@@ -1,0 +1,26 @@
+<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Meridian OS</title>
+<style>
+:root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e8ee;--mute:#8b93a7;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--acc:#6ea8fe;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-size:13px}
+header{display:flex;align-items:center;gap:16px;padding:10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
+header h1{font-size:15px;margin:0}header .sub{color:var(--mute)}
+.badge{padding:2px 8px;border-radius:10px;font-size:11px;border:1px solid var(--line);color:var(--mute)}
+.badge.live{color:var(--ok);border-color:var(--ok)}
+main{display:grid;grid-template-columns:1.3fr 1fr;gap:12px;padding:12px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-width:0}
+section h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:0 0 8px}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;grid-column:1/-1}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}.kpi b{display:block;font-size:20px}.kpi span{color:var(--mute);font-size:11px}
+table{width:100%;border-collapse:collapse}td,th{padding:4px 6px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500;font-size:11px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}.g{background:var(--ok)}.a{background:var(--warn)}.r{background:var(--bad)}
+button{background:#232838;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px}button:hover{border-color:var(--acc)}button:disabled{opacity:.4;cursor:default}
+button.primary{background:var(--acc);color:#0b1020;border-color:var(--acc)}button.danger{border-color:var(--bad);color:var(--bad)}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.mute{color:var(--mute)}.mono{font-family:ui-monospace,Menlo,monospace;font-size:11px}
+.ledger{max-height:520px;overflow:auto}.ledger div{padding:3px 0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:56px 96px 70px 1fr;gap:6px}
+.ledger .rule{color:var(--acc)}.ledger .gate{color:var(--warn)}.ledger .execute{color:var(--ok)}.ledger .error{color:var(--bad)}
+.org{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.role{border:1px solid var(--line);border-radius:6px;padding:6px 8px}.role b{display:block}.role.human{border-color:var(--acc)}.role.declared{opacity:.5}
+.ap{border:1px solid var(--warn);border-radius:6px;padding:8px;margin-bottom:8px}.ap.done{border-color:var(--line);opacity:.6}
+textarea,input{background:#0f1115;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px;font-size:12px;width:100%}
+pre{white-space:pre-wrap;margin:0;font-size:11px}.wide{grid-column:1/-1}
+@media(max-width:900px){main{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(3,1fr)}}
+</style></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>
