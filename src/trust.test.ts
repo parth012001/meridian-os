@@ -19,7 +19,7 @@ import { loadCharter, restoreBaselineCharter } from "./charter.js";
 import { applySupplierSlip, applyExpediteMiss, findAlternatives, assessOrder, getOrder } from "./world.js";
 import { runWatcher, workOpenTasks, ownerDecides, supplierMissesExpedite } from "./roles.js";
 import { decideApproval } from "./actions.js";
-import { recordOutcome, trustRows, shapeOf, buildReplay, mergeProposal, rejectProposal } from "./trust.js";
+import { recordOutcome, trustRows, shapeOf, buildReplay, mergeProposal, rejectProposal, fileProposal } from "./trust.js";
 import { TOOLS } from "./tools.js";
 import { runReviewer } from "./roles.js";
 import { app } from "./server.js";
@@ -198,6 +198,14 @@ describe("proposals from trust", () => {
     const r = TOOLS.propose_charter_diff.run({ summary: "s", evidence: "e", path: "roles.expeditor.authority.spend_usd", value: 500 }, { role: "reviewer", runId: "r" }) as any;
     expect(r.error).toMatch(/already awaiting the owner/);
     expect(proposals()).toHaveLength(1);
+  });
+  it("the filing path itself refuses a non-editable Charter value, whoever proposes", () => {
+    expect(fileProposal({ by: "trust", summary: "s", evidence: "e", patch: { constraints: { 0: { rule: "anything goes" } } } })).toMatchObject({ error: expect.stringMatching(/not editable/) });
+    expect(fileProposal({ by: "trust", summary: "s", evidence: "e", patch: { trust: { thresholds: { expedite_po: 1 } } } })).toMatchObject({ error: expect.stringMatching(/not editable/) });
+    expect(fileProposal({ by: "trust", summary: "s", evidence: "e", patch: { roles: { owner: { kind: "agent" } } } })).toMatchObject({ error: expect.stringMatching(/not editable/) });
+    expect(fileProposal({ by: "trust", summary: "s", evidence: "e", patch: { a: 1, b: 2 } })).toMatchObject({ error: expect.stringMatching(/exactly one/) });
+    expect(proposals()).toEqual([]);
+    expect(fileProposal({ by: "trust", summary: "s", evidence: "e", patch: { roles: { expeditor: { authority: { spend_usd: 300 } } } } })).toMatchObject({ status: "proposed" });
   });
   it("the mock reviewer explains a pending trust proposal instead of filing another", async () => {
     await earnThree();
