@@ -338,6 +338,7 @@ describe("the arc through the API, as the dock drives it", () => {
     expect((await post("/api/reset", { world: "earned_autonomy" }, "viewer")).status).toBe(403);
     const bad = await post("/api/reset", { world: "nope" }, "owner");
     expect(bad.status).toBe(400); expect(((await bad.json()) as any).error).toMatch(/unknown world/);
+    for (const world of ["constructor", "__proto__", "toString", 42, { x: 1 }]) expect((await post("/api/reset", { world }, "owner")).status, String(world)).toBe(400);
     expect((await state()).board.some((o: any) => o.id === "ORD-3001")).toBe(false);
     expect((await post("/api/reset", { world: "earned_autonomy" }, "owner")).status).toBe(200);
     const s = await state();
