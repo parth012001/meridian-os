@@ -56,8 +56,8 @@ const WORLDS: Record<string, { note: string; extra: () => void }> = {
 app.post("/api/reset", async c => {
   const denied = ownerOnly(c); if (denied) return denied;
   const b = await c.req.json().catch(() => ({}));
-  const name = typeof b.world === "string" ? b.world : "baseline";
-  const world = Object.hasOwn(WORLDS, name) ? WORLDS[name] : undefined;   // own keys only: "constructor" is not a World
+  const name = b.world === undefined ? "baseline" : b.world;
+  const world = typeof name === "string" && Object.hasOwn(WORLDS, name) ? WORLDS[name] : undefined;   // own keys only: "constructor" is not a World; a non-string is not one either
   if (!world) return c.json({ error: `unknown world; one of ${Object.keys(WORLDS).join(", ")}` }, 400);   // fail closed: never seed something unnamed
   return guard(c, async () => { seed(); world.extra(); restoreBaselineCharter(); clearSupplierReplyOverrides(); log({ role: role(c), kind: "observe", summary: `world reset by ${role(c)}${world.note}` }); return { ok: true, world: name }; });
 });
