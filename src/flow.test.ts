@@ -172,6 +172,13 @@ describe("api", () => {
     expect((await work).status).toBe(200);
     expect((await post("/api/watch", {}, "owner")).status).toBe(200);
   });
+  it("working a parked task is a 409, not a 500", async () => {
+    slipFrames(); runWatcher(); await workOpenTasks();
+    const parked = taskFor("ORD-1042"); expect(parked.status).toBe("awaiting_approval");
+    const res = await post(`/api/tasks/${parked.id}/work`, {}, "owner");
+    expect(res.status).toBe(409); expect((await res.json() as any).error).toMatch(/awaiting_approval/);
+    expect((await post("/api/tasks/nope/work", {}, "owner")).status).toBe(500);
+  });
   it("a merge that no longer applies is refused, and the proposal stays open", async () => {
     const r = TOOLS.propose_charter_diff.run({ summary: "s", evidence: "e", path: "autonomy_levels.substitute_sku", value: "act" }, { role: "reviewer", runId: "r" }) as any;
     db().prepare("UPDATE charter_proposals SET patch=? WHERE id=?").run(JSON.stringify({ autonomy_levels: { substitute_sku: "yolo" } }), r.proposal_id);

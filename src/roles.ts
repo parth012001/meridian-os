@@ -29,7 +29,7 @@ export function runWatcher() {
 /** Works one task. Only tasks in `from` are eligible: a parked or resolved task is never re-run by accident (that would duplicate approvals). */
 export async function runExpeditor(taskId: string, extra = "", from: string[] = ["open", "escalated"]) {
   const t = db().prepare("SELECT * FROM tasks WHERE id=?").get(taskId) as any; if (!t) throw new Error("no task");
-  if (!from.includes(t.status)) throw new Error(`task ${taskId} is ${t.status}; the expeditor only works tasks that are ${from.join(" or ")}`);
+  if (!from.includes(t.status)) throw Object.assign(new Error(`task ${taskId} is ${t.status}; the expeditor only works tasks that are ${from.join(" or ")}`), { status: 409 });
   db().prepare("UPDATE tasks SET status='in_progress' WHERE id=?").run(taskId);
   const r = await runRole("expeditor", `Recover order ${t.order_id}. It is ${t.days_late} day(s) late. Reason: ${t.reason}. ${extra}`.trim(), { taskId, orderId: t.order_id });
   const after = db().prepare("SELECT status FROM tasks WHERE id=?").get(taskId) as any;

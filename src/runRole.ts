@@ -7,6 +7,7 @@ import { TOOLS, toolSpecsFor, type ToolCtx } from "./tools.js";
 import { log } from "./ledger.js";
 
 const MAX_TURNS = 12;
+const safeJson = (s: string): any => { try { return JSON.parse(s); } catch { return undefined; } };
 
 export function systemPrompt(role: string): string {
   const c = loadCharter(); const r = c.roles[role];
@@ -34,14 +35,26 @@ export async function runRole(role: string, task: string, ctx: Omit<ToolCtx, "ro
   const allowed = new Set(loadCharter().roles[role]?.tools ?? []);
   const messages: ChatCompletionMessageParam[] = [{ role: "system", content: systemPrompt(role) }, { role: "user", content: task }];
   const tctx: ToolCtx = { ...ctx, role, runId };
-  let tokensIn = 0, tokensOut = 0, turns = 0, finalText = "", status = "completed";
+  let tokensIn = 0, tokensOut = 0, turns = 0, finalText = "", status = "completed", nudged = false;
   try {
     while (turns < MAX_TURNS) {
       turns++;
       const turn = await chat(messages, toolSpecsFor(role), role);
       tokensIn += turn.tokensIn; tokensOut += turn.tokensOut;
       if (!MOCK) log({ role, kind: "llm", refType: "run", refId: runId, summary: `${MODEL} turn ${turns}: ${turn.toolCalls.length ? turn.toolCalls.map(t => t.name).join(", ") : "final"}`, tokensIn: turn.tokensIn, tokensOut: turn.tokensOut });
-      if (turn.toolCalls.length === 0) { finalText = turn.text ?? ""; break; }
+      if (turn.toolCalls.length === 0) {
+        // A refused tool call is an instruction, not a stopping point. If the model answers a refusal with prose, push back once.
+        const lastTool = [...messages].reverse().find((m: any) => m.role === "tool") as any;
+        const refusal = lastTool ? safeJson(lastTool.content)?.error : undefined;
+        if (refusal && !nudged) {
+          nudged = true;
+          messages.push(turn.raw ?? { role: "assistant", content: turn.text });
+          messages.push({ role: "user", content: `Your last call to ${lastTool.name} was refused: ${refusal} A refusal is not a stopping point. Act on it with a tool call now; only finish with text after a tool call succeeds.` });
+          log({ role, kind: "plan", refType: "run", refId: runId, summary: `${role} answered a refused ${lastTool.name} with text; nudged once to act` });
+          continue;
+        }
+        finalText = turn.text ?? ""; break;
+      }
       messages.push(turn.raw ?? { role: "assistant", content: turn.text, tool_calls: turn.toolCalls.map(t => ({ id: t.id, type: "function", function: { name: t.name, arguments: JSON.stringify(t.args) } })) } as any);
       for (const tc of turn.toolCalls) {
         let result: unknown;

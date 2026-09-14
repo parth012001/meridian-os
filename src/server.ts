@@ -18,7 +18,7 @@ const ownerOnly = (c: any) => role(c) === "owner" ? null : c.json({ error: "owne
 let busy = false;
 const guard = async (c: any, fn: () => Promise<unknown>) => {
   if (busy) return c.json({ error: "an agent run is already in progress" }, 409);
-  busy = true; try { return c.json(await fn()); } catch (e) { return c.json({ error: (e as Error).message }, 500); } finally { busy = false; }
+  busy = true; try { return c.json(await fn()); } catch (e) { return c.json({ error: (e as Error).message }, (e as any).status ?? 500); } finally { busy = false; }
 };
 
 if ((db().prepare("SELECT COUNT(*) c FROM orders").get() as any).c === 0) seed();
