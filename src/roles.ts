@@ -1,7 +1,7 @@
 // The live roles. Watcher is deterministic (procedures beat judgment); the others are LLM loops over Charter-scoped tools.
 import { db, uid, nowIso } from "./db.js";
 import { log } from "./ledger.js";
-import { assessAll, getOrder, assessOrder, recordEvent } from "./world.js";
+import { assessAll, getOrder, assessOrder, recordEvent, reserveStock } from "./world.js";
 import { runRole } from "./runRole.js";
 import { decideApproval, executeAction } from "./actions.js";
 
@@ -63,8 +63,16 @@ export async function ownerDecides(approvalId: string, decision: "approved" | "r
     return n > 0;
   };
   if (a.type === "substitute_sku") {
-    // owner authorised asking the customer; send the request, then wait for consent
-    await runComms(a.order_id, "substitution_request", a.task_id, `Owner approved asking for substitution ${JSON.stringify(JSON.parse(a.params))}.`);
+    // owner authorised asking the customer. Hold the stock first: the request promises the date, so the units must be ours before we ask.
+    const p = JSON.parse(a.params);
+    if (!reserveStock(a.order_id, p.to_sku, p.branch, p.qty)) {
+      db().prepare("UPDATE actions SET status='denied' WHERE id=?").run(a.id);
+      db().prepare("UPDATE tasks SET status='open' WHERE id=?").run(a.task_id);
+      log({ role: "system", kind: "error", refType: "task", refId: a.task_id, summary: `${p.to_sku} at ${p.branch} no longer covers ${a.order_id} (${p.qty} needed); substitution request NOT sent, expeditor re-run` });
+      await runExpeditor(a.task_id, `The owner approved substituting ${p.from_sku} with ${p.to_sku}, but that stock is gone and the customer was NOT asked. Excluded levers: substitute_sku. Recover another way or escalate.`);
+      return { rerun: true, reason: "substitute stock gone before the customer was asked" };
+    }
+    await runComms(a.order_id, "substitution_request", a.task_id, `Owner approved asking for substitution ${JSON.stringify(p)}.`);
     if (!release("substitution_request")) return { error: "substitution request was not drafted; task escalated" };
     db().prepare("UPDATE tasks SET status='awaiting_customer' WHERE id=?").run(a.task_id);
     return { awaiting: "customer_consent" };

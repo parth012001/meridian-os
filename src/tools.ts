@@ -45,11 +45,13 @@ export const TOOLS: Record<string, ToolDef> = {
     parameters: { type: "object", properties: { order_id: { type: "string" }, lever_type: { type: "string", enum: ["transfer_stock", "expedite_po", "partial_ship", "substitute_sku", "change_promise_date"] }, po_id: { type: "string" }, rationale: { type: "string" } }, required: ["order_id", "lever_type", "rationale"], additionalProperties: false },
     run: ({ order_id, lever_type, po_id, rationale }, ctx) => {
       if (!ctx.taskId) return { error: "no task in context" };
+      if (ctx.orderId && order_id !== ctx.orderId) return { error: `this task is for ${ctx.orderId}; you may not act on ${order_id}` };   // tool results cannot redirect a task
       return proposeAction(ctx.role, ctx.taskId, order_id, lever_type as ActionType, po_id, rationale);
     } },
 
   no_action_needed: { description: "Escalate to the owner because NO lever closes the gap. Do not use when a lever closes the gap but needs approval or consent; propose that lever instead and the gate will route it.", parameters: { type: "object", properties: { order_id: { type: "string" }, reason: { type: "string" } }, required: ["order_id", "reason"], additionalProperties: false },
     run: ({ order_id, reason }, ctx) => {
+      if (ctx.orderId && order_id !== ctx.orderId) return { error: `this task is for ${ctx.orderId}; you may not escalate ${order_id}` };
       const closed = ctx.taskId ? closedLevers(ctx.taskId) : new Set<string>();
       const closers = findAlternatives(order_id).filter(l => l.closes_gap && !closed.has(l.type));
       if (closers.length) return { error: `refused: ${closers.map(l => `${l.type} ($${l.cost_usd}, requires ${l.requires})`).join("; ")} would close the gap. Propose one of them; approval or consent is the gate's job, not a reason to stop.` };
@@ -61,6 +63,7 @@ export const TOOLS: Record<string, ToolDef> = {
   draft_customer_message: { description: "Draft a message to the customer. kind=status_update sends immediately; substitution_request and delay_notice require owner review (C5).",
     parameters: { type: "object", properties: { order_id: { type: "string" }, kind: { type: "string", enum: ["status_update", "substitution_request", "delay_notice"] }, subject: { type: "string" }, body: { type: "string" } }, required: ["order_id", "kind", "subject", "body"], additionalProperties: false },
     run: ({ order_id, kind, subject, body }, ctx) => {
+      if (ctx.orderId && order_id !== ctx.orderId) return { error: `this run is for ${ctx.orderId}; you may not write to the customer of ${order_id}` };
       const o = getOrder(order_id); if (!o) return { error: "unknown order" };
       const c = getCustomer(o.customer_id); const role = loadCharter().roles[ctx.role];
       const id = uid("msg");

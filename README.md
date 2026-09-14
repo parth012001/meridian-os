@@ -139,7 +139,10 @@ work, repeated, graded by someone who isn't the worker, plus a few traps.
 pnpm trials                    # every scenario once (mock or live depending on OPENAI_API_KEY); stop `pnpm start` first or set DB_PATH, the CLI resets the same data/world.db
 pnpm trials --n 3              # three reps each
 pnpm trials --only prompt_injection_in_supplier_reply
+pnpm trials --purge            # forget past rows (e.g. after a grader change)
 ```
+
+A trial whose agent run threw (model call, network, auth) is stored as **aborted** and kept out of the pass rate; only the model's behaviour is graded.
 
 Each trial resets the World, plays the outside world (the owner approves everything, the customer
 replies), runs the desk, then grades the Ledger and the World with code. The graders never ask the
@@ -206,6 +209,5 @@ src/llm.ts          OpenAI adapter + deterministic mock
 src/server.ts       Hono API (x-role identity)
 src/cli.ts          terminal demo
 web/                React control plane (board, inbox, org, outbox, ledger)
-docs/PLAN.md        the plan this was built from, including research
 docs/PROMPT.md      the assignment
 ```

@@ -123,13 +123,14 @@ function App() {
         {trials && <>
           <div className="row" style={{ marginBottom: 8 }}>
             {trials.scenarios.map((sc: any) => <button key={sc.id} disabled={s.busy || !owner} title={sc.why} onClick={act("/trials/run", { only: sc.id, n: 1 })}>▶ {sc.title}</button>)}
-            <button className="primary" disabled={s.busy || !owner} onClick={act("/trials/run", { n: 1 })}>▶ Run all</button>
+            <button className="primary" disabled={s.busy || !owner} onClick={() => { if (!s.mode.startsWith("live") || confirm("Live mode: about 9 minutes and roughly 1.3M tokens. Every scenario resets the World and the Charter reverts to baseline. Continue?")) act("/trials/run", { n: 1 })(); }}>▶ Run all</button>
             <span className="mute">{owner ? "each run resets the World, plays the owner and the customer, then grades the ledger with code" : "switch to owner to run trials"}</span>
           </div>
-          {trials.scorecard.length > 0 && <div style={{ overflowX: "auto", marginBottom: 8 }}><table><thead><tr><th>scenario</th><th>mode</th><th>reps</th><th>passed</th><th>avg time</th><th>tokens</th><th>checks failing</th></tr></thead><tbody>
+          {trials.scorecard.length > 0 && <div style={{ overflowX: "auto", marginBottom: 8 }}><table><thead><tr><th>scenario</th><th>mode</th><th>reps</th><th>passed</th><th>aborted</th><th>avg time</th><th>tokens</th><th>checks failing</th></tr></thead><tbody>
             {trials.scorecard.map((r: any) => { const failing = Object.entries<any>(r.checks).filter(([, v]) => v.pass < v.total); return <tr key={r.scenario + r.mode}>
               <td className="mono">{r.scenario}</td><td className="mono">{r.mode}</td><td>{r.reps}</td>
               <td><span style={{ color: r.passed === r.reps ? "var(--ok)" : "var(--bad)" }}>{r.passed}/{r.reps}</span></td>
+              <td className="mute" title="runs that threw (model call, network); not graded">{r.aborted || ""}</td>
               <td>{(r.avg_ms / 1000).toFixed(1)}s</td><td>{r.tokens.toLocaleString()}</td>
               <td className="mute" style={{ overflowWrap: "anywhere" }}>{failing.length ? failing.map(([k, v]) => <div key={k}><span className="mono">{k}</span> ({v.pass}/{v.total}): {v.lastFail}</div>) : "none"}</td>
             </tr>; })}

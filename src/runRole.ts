@@ -36,7 +36,7 @@ export async function runRole(role: string, task: string, ctx: Omit<ToolCtx, "ro
   const allowed = new Set(loadCharter().roles[role]?.tools ?? []);
   const messages: ChatCompletionMessageParam[] = [{ role: "system", content: systemPrompt(role) }, { role: "user", content: task }];
   const tctx: ToolCtx = { ...ctx, role, runId };
-  let tokensIn = 0, tokensOut = 0, turns = 0, finalText = "", status = "completed", nudged = false;
+  let tokensIn = 0, tokensOut = 0, turns = 0, finalText = "", status = "completed", nudged = false, error: string | null = null;
   try {
     while (turns < MAX_TURNS) {
       turns++;
@@ -74,10 +74,10 @@ export async function runRole(role: string, task: string, ctx: Omit<ToolCtx, "ro
     if (turns >= MAX_TURNS && !finalText) { status = "stalled"; log({ role, kind: "error", refType: "run", refId: runId, summary: `${role} hit ${MAX_TURNS} turns without finishing; escalated` }); if (ctx.taskId) db().prepare("UPDATE tasks SET status='escalated' WHERE id=?").run(ctx.taskId); }
     else log({ role, kind: "outcome", refType: "run", refId: runId, summary: finalText || `${role} finished`, tokensIn, tokensOut });
   } catch (e) {
-    status = "failed";
-    log({ role, kind: "error", refType: "run", refId: runId, summary: `${role} run failed: ${(e as Error).message}` });
+    status = "failed"; error = (e as Error).message;   // an exception here is the model call or the plumbing, not the model's judgment
+    log({ role, kind: "error", refType: "run", refId: runId, summary: `${role} run failed: ${error}` });
     if (ctx.taskId) db().prepare("UPDATE tasks SET status='escalated' WHERE id=?").run(ctx.taskId);
   }
-  db().prepare("UPDATE runs SET status=?, turns=?, tokens_in=?, tokens_out=?, ended_at=? WHERE id=?").run(status, turns, tokensIn, tokensOut, nowIso(), runId);
+  db().prepare("UPDATE runs SET status=?, turns=?, tokens_in=?, tokens_out=?, ended_at=?, error=? WHERE id=?").run(status, turns, tokensIn, tokensOut, nowIso(), error, runId);
   return { runId, status, turns, finalText, tokensIn, tokensOut };
 }

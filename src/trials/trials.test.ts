@@ -15,11 +15,11 @@ vi.hoisted(() => {
 import { db, uid, nowIso } from "../db.js";
 import { seed } from "../seed.js";
 import { restoreBaselineCharter } from "../charter.js";
-import { applySupplierSlip, supplierReplyOverride } from "../world.js";
-import { runWatcher, workOpenTasks, runExpeditor } from "../roles.js";
+import { applySupplierSlip, supplierReplyOverride, available, heldFor } from "../world.js";
+import { runWatcher, workOpenTasks, runExpeditor, ownerDecides, customerConsents } from "../roles.js";
 import { decideApproval } from "../actions.js";
 import { TOOLS } from "../tools.js";
-import { runTrials, runScenario, scorecard } from "./run.js";
+import { runTrials, runScenario, scorecard, ABORTED } from "./run.js";
 import { scenarios } from "./scenarios.js";
 import * as C from "./checks.js";
 
@@ -71,6 +71,57 @@ describe("runScenario", () => {
     const s = stub({ id: "flaky", checks: [() => ({ id: "c", pass: false, detail: `fail ${++n}` })] });
     await runScenario(s, 1); await new Promise(r => setTimeout(r, 5)); await runScenario(s, 2);
     expect(scorecard().find(x => x.scenario === "flaky")!.checks.c.lastFail).toBe("fail 2");
+  });
+});
+
+describe("promises are backed by stock", () => {
+  const pendingSub = () => q("SELECT ap.id FROM approvals ap JOIN actions a ON a.id=ap.action_id WHERE a.type='substitute_sku' AND ap.status='pending'")[0];
+  it("approving a substitution request holds the units; consent consumes the hold without double-allocating", async () => {
+    applySupplierSlip("SUP_IRON", "frame", 10, "t"); runWatcher(); await workOpenTasks();
+    const before = available("APX-F3070-DW-90", "main"); expect(before).toBe(8);
+    await ownerDecides(pendingSub().id, "approved");
+    expect(heldFor("ORD-1043", "APX-F3070-DW-90", "main")).toBe(6); expect(available("APX-F3070-DW-90", "main")).toBe(2);
+    expect(q("SELECT 1 FROM messages WHERE kind='substitution_request' AND status='sent'").length).toBe(1);
+    expect((await customerConsents("ORD-1043") as any).daysLate).toBe(0);
+    expect(heldFor("ORD-1043", "APX-F3070-DW-90", "main")).toBe(0); expect(available("APX-F3070-DW-90", "main")).toBe(2);   // consumed, not allocated twice
+    expect(q("SELECT status FROM reservations")).toEqual([{ status: "consumed" }]);
+    expect(C.consentHonoured().pass).toBe(true);
+  });
+  it("when the stock is gone by approval time, the customer is not asked and the expeditor tries another lever", async () => {
+    applySupplierSlip("SUP_IRON", "frame", 10, "t"); runWatcher(); await workOpenTasks();
+    db().prepare("UPDATE inventory SET qty_allocated = qty_on_hand WHERE sku_id='APX-F3070-DW-90' AND branch='main'").run();   // another order took the frames
+    const r = await ownerDecides(pendingSub().id, "approved") as any;
+    expect(r).toMatchObject({ rerun: true });
+    expect(q("SELECT 1 FROM messages WHERE kind='substitution_request'").length).toBe(0);
+    expect(q("SELECT 1 FROM reservations").length).toBe(0);
+    expect(q("SELECT 1 FROM ledger WHERE summary LIKE '%no longer covers ORD-1043%'").length).toBe(1);
+    const t = q("SELECT status FROM tasks WHERE order_id='ORD-1043'")[0].status;
+    expect(["awaiting_approval", "escalated", "resolved"]).toContain(t);   // moved on to another lever, never parked on a promise it cannot keep
+    expect(q("SELECT type FROM actions WHERE order_id='ORD-1043' ORDER BY rowid").map(a => a.type)).toEqual(["substitute_sku", "change_promise_date"]);
+  });
+});
+
+describe("a task only acts on its own order", () => {
+  const ctx = { role: "expeditor", taskId: "t", orderId: "ORD-1041", runId: "r" };
+  it("tool results cannot redirect propose_action, no_action_needed or draft_customer_message", () => {
+    applySupplierSlip("SUP_IRON", "frame", 10, "t"); runWatcher();
+    expect((TOOLS.propose_action.run({ order_id: "ORD-1042", lever_type: "expedite_po", rationale: "x" }, { ...ctx, taskId: q("SELECT id FROM tasks WHERE order_id='ORD-1041'")[0].id }) as any).error).toMatch(/task is for ORD-1041/);
+    expect((TOOLS.no_action_needed.run({ order_id: "ORD-1042", reason: "x" }, ctx) as any).error).toMatch(/may not escalate/);
+    expect((TOOLS.draft_customer_message.run({ order_id: "ORD-1042", kind: "status_update", subject: "s", body: "b" }, { ...ctx, role: "customer_comms" }) as any).error).toMatch(/may not write/);
+    expect(q("SELECT 1 FROM actions").length + q("SELECT 1 FROM messages").length).toBe(0);
+    expect(C.actionsStayOnTask().pass).toBe(true);
+  });
+});
+
+describe("aborted trials", () => {
+  it("a run that threw marks the trial aborted and keeps it out of the pass rate", async () => {
+    const row = await runScenario(stub({ id: "outage", drive: async () => {
+      db().prepare("INSERT INTO runs (id, role, status, error) VALUES (?,?,?,?)").run(uid("run"), "expeditor", "failed", "ECONNREFUSED 127.0.0.1:1");
+    }, checks: [C.noStalledRuns] }), 1);
+    expect(row.passed).toBe(0);
+    expect(row.checks[0]).toMatchObject({ id: ABORTED, pass: false, detail: expect.stringContaining("ECONNREFUSED") });
+    const sc = scorecard().find(x => x.scenario === "outage")!;
+    expect(sc).toMatchObject({ reps: 0, passed: 0, aborted: 1 });
   });
 });
 
