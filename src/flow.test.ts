@@ -188,3 +188,13 @@ describe("api", () => {
     expect(loadCharter().version).toBe(1);
   });
 });
+
+describe("procedures", () => {
+  it("refuses a promise-date change while a lever that keeps the date exists", () => {
+    slipFrames(); runWatcher();
+    const t = taskFor("ORD-1042");
+    const r = proposeAction("expeditor", t.id, "ORD-1042", "change_promise_date", undefined, "supplier said so") as any;
+    expect(r.error).toMatch(/last resort/);
+    expect(q("SELECT 1 FROM actions WHERE order_id='ORD-1042'").length).toBe(0);
+  });
+});

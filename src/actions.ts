@@ -27,6 +27,14 @@ export function proposeAction(role: string, taskId: string, orderId: string, lev
     return { error: `${leverType} arrives ${lever.new_arrival} which is still after the promise date; it would spend $${lever.cost_usd} without recovering the order. Levers that close the gap: ${better.join("; ") || "none"}. Propose one of those (approval/consent is handled by the gate), or call no_action_needed.` };
   }
 
+  if (leverType === "change_promise_date") {
+    // The outcome is "deliver on the promise date". Moving the date is the last resort, never a shortcut a supplier can talk us into.
+    const keepers = levers.filter(l => l.closes_gap && l.type !== "change_promise_date" && !rejected.has(l.type));
+    if (keepers.length) {
+      log({ role, kind: "error", refType: "task", refId: taskId, summary: `${role} proposed change_promise_date on ${orderId} while ${keepers.map(k => k.type).join("/")} would keep the date; refused by procedure` });
+      return { error: `Moving the promise date is the last resort. These levers keep the customer's date: ${keepers.map(l => `${l.type} ($${l.cost_usd}, requires ${l.requires})`).join("; ")}. Propose one of them; only propose change_promise_date when none of them exist or the owner rejected them.` };
+    }
+  }
   const consent = leverType === "substitute_sku" && eventsForOrder(orderId, "customer_consent").some(e => JSON.parse(e.payload).to_sku === (lever.params as any).to_sku);
   const sameFr = leverType === "substitute_sku" ? (getSku((lever.params as any).from_sku).fire_rating ?? null) === (getSku((lever.params as any).to_sku).fire_rating ?? null) : undefined;
   const verdict = gate(loadCharter(), { role, action: { type: leverType, cost_usd: lever.cost_usd, touches: lever.touches },
