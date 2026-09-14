@@ -5,13 +5,16 @@ import { assessAll, getOrder, assessOrder, recordEvent } from "./world.js";
 import { runRole } from "./runRole.js";
 import { decideApproval, executeAction } from "./actions.js";
 
-/** Ops Manager: scan every open order, open one task per at-risk order that has no open task. */
+/** Task states that still own an order. Anything else (resolved) lets the watcher open a fresh task. */
+const ACTIVE_TASK = "('open','in_progress','awaiting_approval','awaiting_customer','escalated')";
+
+/** Ops Manager: scan every open order, open one task per at-risk order that has no active task. */
 export function runWatcher() {
   const opened: string[] = []; const seen: string[] = [];
   for (const r of assessAll()) {
     if (r.daysLate <= 0) continue;
     seen.push(r.order.id);
-    const existing = db().prepare("SELECT id FROM tasks WHERE order_id=? AND status IN ('open','in_progress','awaiting_approval','escalated')").get(r.order.id);
+    const existing = db().prepare(`SELECT id FROM tasks WHERE order_id=? AND status IN ${ACTIVE_TASK}`).get(r.order.id);
     if (existing) continue;
     const id = uid("task");
     db().prepare("INSERT INTO tasks (id, order_id, opened_by, assigned_role, risk_score, days_late, reason) VALUES (?,?,?,?,?,?,?)")
@@ -23,8 +26,10 @@ export function runWatcher() {
   return { atRisk: seen, opened };
 }
 
-export async function runExpeditor(taskId: string, extra = "") {
+/** Works one task. Only tasks in `from` are eligible: a parked or resolved task is never re-run by accident (that would duplicate approvals). */
+export async function runExpeditor(taskId: string, extra = "", from: string[] = ["open", "escalated"]) {
   const t = db().prepare("SELECT * FROM tasks WHERE id=?").get(taskId) as any; if (!t) throw new Error("no task");
+  if (!from.includes(t.status)) throw new Error(`task ${taskId} is ${t.status}; the expeditor only works tasks that are ${from.join(" or ")}`);
   db().prepare("UPDATE tasks SET status='in_progress' WHERE id=?").run(taskId);
   const r = await runRole("expeditor", `Recover order ${t.order_id}. It is ${t.days_late} day(s) late. Reason: ${t.reason}. ${extra}`.trim(), { taskId, orderId: t.order_id });
   const after = db().prepare("SELECT status FROM tasks WHERE id=?").get(taskId) as any;
@@ -49,31 +54,45 @@ export async function ownerDecides(approvalId: string, decision: "approved" | "r
     await runExpeditor(a.task_id, `The owner REJECTED ${a.type}${note ? ` ("${note}")` : ""}. Excluded levers: ${a.type}. Find another way or escalate.`);
     return { rerun: true };
   }
+  // C5: the owner's approval of the action is the review of the notice it implies. Release the drafted message;
+  // if comms produced no draft, nothing is "sent" and the task escalates to the human rather than pretending.
+  const release = (kind: "substitution_request" | "delay_notice") => {
+    const n = db().prepare("UPDATE messages SET status='sent', sent_at=? WHERE order_id=? AND kind=? AND status='pending_review'").run(nowIso(), a.order_id, kind).changes;
+    if (n) log({ role: "system", onBehalfOf: "owner", kind: "message", refType: "order", refId: a.order_id, charterRule: "C5", summary: `${kind.replace("_", " ")} released to customer under owner approval ${approvalId}` });
+    else { db().prepare("UPDATE tasks SET status='escalated' WHERE id=?").run(a.task_id); log({ role: "system", kind: "error", refType: "task", refId: a.task_id, summary: `no ${kind} was drafted for ${a.order_id}; nothing sent, task escalated to owner` }); }
+    return n > 0;
+  };
   if (a.type === "substitute_sku") {
     // owner authorised asking the customer; send the request, then wait for consent
     await runComms(a.order_id, "substitution_request", a.task_id, `Owner approved asking for substitution ${JSON.stringify(JSON.parse(a.params))}.`);
-    db().prepare("UPDATE messages SET status='sent', sent_at=? WHERE order_id=? AND kind='substitution_request' AND status='pending_review'").run(nowIso(), a.order_id);
-    log({ role: "system", onBehalfOf: "owner", kind: "message", refType: "order", refId: a.order_id, charterRule: "C5", summary: `substitution request released to customer under owner approval ${approvalId}` });
+    if (!release("substitution_request")) return { error: "substitution request was not drafted; task escalated" };
     db().prepare("UPDATE tasks SET status='awaiting_customer' WHERE id=?").run(a.task_id);
     return { awaiting: "customer_consent" };
   }
   if (a.type === "change_promise_date") {
     await runComms(a.order_id, "delay_notice", a.task_id, "Owner approved the new promise date.");
-    db().prepare("UPDATE messages SET status='sent', sent_at=? WHERE order_id=? AND kind='delay_notice' AND status='pending_review'").run(nowIso(), a.order_id);
+    release("delay_notice");
     return { executed: res.executed };
   }
   if (res.executed?.gapClosed) await runComms(a.order_id, "status_update", a.task_id, "The order is back on schedule after the owner approved the recovery.");
+  else if (res.executed) {
+    // approved and executed, but the order is still late (another PO, or partial ship): keep working it
+    await runExpeditor(a.task_id, `The owner APPROVED ${a.type} and it executed, but ${a.order_id} is still ${res.executed.daysLate} day(s) late. Recover the remaining gap.`);
+    return { executed: res.executed, rerun: true };
+  }
   return { executed: res.executed };
 }
 
 /** Simulated customer reply to a substitution request. */
 export async function customerConsents(orderId: string) {
-  const a = db().prepare("SELECT * FROM actions WHERE order_id=? AND type='substitute_sku' AND status='approved' ORDER BY created_at DESC LIMIT 1").get(orderId) as any;
-  if (!a) return { error: "no approved substitution pending consent" };
+  const a = db().prepare(`SELECT a.* FROM actions a JOIN tasks t ON t.id=a.task_id
+                          WHERE a.order_id=? AND a.type='substitute_sku' AND a.status='approved' AND t.status='awaiting_customer'
+                          ORDER BY a.created_at DESC LIMIT 1`).get(orderId) as any;
+  if (!a) return { error: "no substitution request is awaiting customer consent for this order" };
   const p = JSON.parse(a.params);
   recordEvent("customer_consent", { to_sku: p.to_sku, from_sku: p.from_sku, via: "email reply" }, orderId);
   log({ role: "customer", kind: "message", refType: "order", refId: orderId, summary: `customer consented to substitution ${p.from_sku} -> ${p.to_sku}`, detail: { modality: "email" } });
-  const r = await runExpeditor(a.task_id, `Customer consent for substituting ${p.from_sku} with ${p.to_sku} is now recorded as an event. Re-propose the substitution.`);
+  const r = await runExpeditor(a.task_id, `Customer consent for substituting ${p.from_sku} with ${p.to_sku} is now recorded as an event. Re-propose the substitution.`, ["awaiting_customer"]);
   const risk = assessOrder(getOrder(orderId)!);
   if (risk.daysLate === 0) await runComms(orderId, "status_update", a.task_id, "Substitution executed with customer consent; order ships on time.");
   return { rerun: r, daysLate: risk.daysLate };

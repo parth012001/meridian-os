@@ -3,18 +3,26 @@ import { db, uid, nowIso } from "./db.js";
 import { loadCharter, type ActionType } from "./charter.js";
 import { gate } from "./gate.js";
 import { log } from "./ledger.js";
-import { assessOrder, findAlternatives, applyLever, getOrder, getSku, eventsForOrder, openingsForOrder, type Lever } from "./world.js";
+import { assessOrder, findAlternatives, applyLever, getOrder, getSku, eventsForOrder, type Lever } from "./world.js";
 
 export const spentOnOrder = (orderId: string) =>
   (db().prepare("SELECT COALESCE(SUM(cost_usd),0) v FROM actions WHERE order_id=? AND status='executed'").get(orderId) as any).v as number;
+/** Lever types the owner already rejected on this task. A rejection is final for the task; enforced here, not by prompt. */
+export const rejectedLevers = (taskId: string) =>
+  new Set((db().prepare("SELECT DISTINCT type FROM actions WHERE task_id=? AND status='rejected'").all(taskId) as { type: string }[]).map(r => r.type));
 
 export function proposeAction(role: string, taskId: string, orderId: string, leverType: ActionType, poId: string | undefined, rationale: string) {
   const order = getOrder(orderId); if (!order) return { error: `unknown order ${orderId}` };
+  const rejected = rejectedLevers(taskId);
+  if (rejected.has(leverType)) {
+    log({ role, kind: "error", refType: "task", refId: taskId, summary: `${role} re-proposed ${leverType} on ${orderId} after the owner rejected it; refused by procedure` });
+    return { error: `the owner already rejected ${leverType} on this task. Propose a different lever or call no_action_needed.` };
+  }
   const levers = findAlternatives(orderId);
   const lever = levers.find(l => l.type === leverType && (!poId || l.po_id === poId)) ?? levers.find(l => l.type === leverType);
   if (!lever) return { error: `lever ${leverType} is not available for ${orderId}; call find_alternatives` };
   if (!lever.closes_gap && lever.type !== "partial_ship") {
-    const better = levers.filter(l => l.closes_gap).map(l => `${l.type} ($${l.cost_usd}, requires ${l.requires})`);
+    const better = levers.filter(l => l.closes_gap && !rejected.has(l.type)).map(l => `${l.type} ($${l.cost_usd}, requires ${l.requires})`);
     log({ role, kind: "error", refType: "task", refId: taskId, summary: `${role} proposed ${leverType} on ${orderId} but it does not close the gap; refused by procedure`, detail: { lever } });
     return { error: `${leverType} arrives ${lever.new_arrival} which is still after the promise date; it would spend $${lever.cost_usd} without recovering the order. Levers that close the gap: ${better.join("; ") || "none"}. Propose one of those (approval/consent is handled by the gate), or call no_action_needed.` };
   }
@@ -22,7 +30,7 @@ export function proposeAction(role: string, taskId: string, orderId: string, lev
   const consent = leverType === "substitute_sku" && eventsForOrder(orderId, "customer_consent").some(e => JSON.parse(e.payload).to_sku === (lever.params as any).to_sku);
   const sameFr = leverType === "substitute_sku" ? (getSku((lever.params as any).from_sku).fire_rating ?? null) === (getSku((lever.params as any).to_sku).fire_rating ?? null) : undefined;
   const verdict = gate(loadCharter(), { role, action: { type: leverType, cost_usd: lever.cost_usd, touches: lever.touches },
-    order: { id: order.id, order_value: order.order_value, ship_policy: order.ship_policy, hasFireRatedOpenings: openingsForOrder(orderId).some(o => o.fire_rated) },
+    order: { id: order.id, order_value: order.order_value, ship_policy: order.ship_policy },
     spentSoFar: spentOnOrder(orderId), customerConsent: consent, sameFireRating: sameFr });
 
   const id = uid("act");
@@ -62,6 +70,9 @@ export function executeAction(actionId: string, by: string, onBehalfOf?: string)
   if (risk.daysLate === 0) {
     db().prepare("UPDATE tasks SET status='resolved', outcome='recovered', closed_at=? WHERE id=?").run(nowIso(), a.task_id);
     log({ role: by, kind: "outcome", refType: "task", refId: a.task_id, summary: `task ${a.task_id} resolved: ${a.order_id} recovered` });
+  } else {
+    // approved but the gap is still open: hand the task back to the expeditor instead of leaving it parked
+    db().prepare("UPDATE tasks SET status='open' WHERE id=? AND status='awaiting_approval'").run(a.task_id);
   }
   return { gapClosed: risk.daysLate === 0, daysLate: risk.daysLate };
 }

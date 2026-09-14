@@ -49,7 +49,7 @@ roles:
   owner:
     kind: human
     title: Owner / GM
-    approves: [expedite_over_limit, promise_date_change, discount, substitution, customer_notice, charter_change]
+    approves: [expedite_over_limit, change_promise_date, discount, substitution, customer_notice, charter_change]
 
   ops_manager:
     kind: agent

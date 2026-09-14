@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
@@ -36,7 +36,8 @@ export const Charter = z.object({
   outcome: z.object({ id: z.string(), statement: z.string() }),
   kpis: z.record(z.string(), z.object({ formula: z.string(), target: z.string().optional(), constraint: z.string().optional() })),
   constraints: z.array(z.object({ id: z.string(), rule: z.string() })),
-  autonomy_levels: z.record(ActionType, z.enum(["act", "act_within_limit", "act_if_ship_policy_allows", "recommend", "observe"])),
+  // partialRecord: a missing action class is the Charter's way of saying "observe" (the gate defaults to it).
+  autonomy_levels: z.partialRecord(ActionType, z.enum(["act", "act_within_limit", "act_if_ship_policy_allows", "recommend", "observe"])),
   roles: z.record(z.string(), Role),
   escalation: z.object({ default: z.string(), approval_timeout_hours: z.number() }),
 });
@@ -45,11 +46,20 @@ export type RoleDef = z.infer<typeof Role>;
 
 export const MAX_RECOVERY_PCT = 0.02; // C4
 
-let cached: Charter | null = null;
+// Cached per file mtime, so a human editing org.yaml by hand reaches the gate without a restart.
+let cached: { charter: Charter; mtime: number } | null = null;
 export function loadCharter(force = false): Charter {
-  if (cached && !force) return cached;
-  cached = Charter.parse(YAML.parse(readFileSync(CHARTER_PATH, "utf8")));
-  return cached;
+  const mtime = statSync(CHARTER_PATH).mtimeMs;
+  if (cached && !force && cached.mtime === mtime) return cached.charter;
+  cached = { charter: Charter.parse(YAML.parse(readFileSync(CHARTER_PATH, "utf8"))), mtime };
+  return cached.charter;
+}
+/** The only Charter values an agent may propose changing: agent spend limits and autonomy levels. */
+export function editablePaths(c: Charter): string[] {
+  return [
+    ...Object.entries(c.roles).filter(([, r]) => r.kind === "agent").map(([id]) => `roles.${id}.authority.spend_usd`),
+    ...Object.keys(c.autonomy_levels).map(k => `autonomy_levels.${k}`),
+  ];
 }
 export function loadCharterFrom(path: string): Charter { return Charter.parse(YAML.parse(readFileSync(path, "utf8"))); }
 export function rawCharterText(): string { return readFileSync(CHARTER_PATH, "utf8"); }
@@ -57,7 +67,7 @@ export function rawCharterText(): string { return readFileSync(CHARTER_PATH, "ut
 /** The only write path to the Charter. Called by the owner's merge endpoint, never by an agent.
  *  Applies a patch by path (roles.expeditor.authority.spend_usd, autonomy_levels.expedite_po, ...)
  *  so comments and formatting in org.yaml survive. Validates the result before writing. */
-export function applyCharterPatch(patch: Record<string, unknown>): Charter {
+function patchedDoc(patch: Record<string, unknown>) {
   const doc = YAML.parseDocument(readFileSync(CHARTER_PATH, "utf8"));
   const walk = (obj: Record<string, unknown>, path: string[]) => {
     for (const [k, v] of Object.entries(obj)) {
@@ -67,6 +77,15 @@ export function applyCharterPatch(patch: Record<string, unknown>): Charter {
   };
   walk(patch, []);
   doc.set("version", (doc.get("version") as number) + 1);
+  return doc;
+}
+/** Dry run: would this patch still parse as a Charter? Used when a proposal is filed, so a merge can never 500. */
+export function validateCharterPatch(patch: Record<string, unknown>): { ok: true } | { ok: false; error: string } {
+  const r = Charter.safeParse(patchedDoc(patch).toJS());
+  return r.success ? { ok: true } : { ok: false, error: r.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") };
+}
+export function applyCharterPatch(patch: Record<string, unknown>): Charter {
+  const doc = patchedDoc(patch);
   const next = Charter.parse(doc.toJS());   // validate before touching disk
   writeFileSync(CHARTER_PATH, doc.toString({ lineWidth: 0, flowCollectionPadding: false }));
   cached = null;

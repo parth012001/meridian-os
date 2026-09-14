@@ -120,12 +120,13 @@ idempotent on id. Runs record turns and tokens.
 
 ## Procedures the code enforces (learned from live runs)
 
-Three things the model got wrong on its first live run, each now refused in code rather than
+Four things the model got wrong on its first live runs, each now refused in code rather than
 fixed with more prompt:
 
 - **A lever that does not close the gap is refused** by `propose_action`, with the list of levers that do. First live run: the model proposed a $450 expedite that still arrived a day late.
 - **Escalating while a closing lever exists is refused** by `no_action_needed`. The model treated "needs owner approval" as "outside my authority" and gave up instead of proposing.
-- **Charter proposals must name an existing path** under `roles.*` or `autonomy_levels.*` with a value of the same type. The model's first proposal invented its own patch shape and the merge would have written a junk key.
+- **Charter proposals must name an editable path** (an agent's `spend_usd` or an `autonomy_levels.*` entry) with a value that still parses as a Charter; the proposal is dry-run through the same validator the merge uses. The model's first proposal invented its own patch shape and the merge would have written a junk key.
+- **A lever the owner rejected is not proposed again on that task.** `propose_action` refuses it and `no_action_needed` stops counting it as a closer, so a rejection is final for the task rather than a suggestion in the re-run prompt.
 
 Live mode runs on `gpt-5.4-mini` by default (about one second per turn, a full scenario costs cents). The mock speaks the same tool protocol and is used for tests and zero-key demos.
 

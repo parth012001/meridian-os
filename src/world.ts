@@ -1,5 +1,6 @@
 // World = the shared state of the business. Every role reads it; only executed actions write it.
 import { db, uid } from "./db.js";
+import { MAX_RECOVERY_PCT } from "./charter.js";
 
 export const today = (): string => (process.env.TODAY ?? new Date().toISOString().slice(0, 10));
 export function addDays(iso: string, n: number): string {
@@ -20,10 +21,8 @@ export const getSku = (id: string) => db().prepare("SELECT * FROM skus WHERE id=
 export const posForOrder = (orderId: string) => db().prepare("SELECT * FROM purchase_orders WHERE order_id=? AND status='open'").all(orderId) as PO[];
 export const openingsForOrder = (orderId: string) => db().prepare("SELECT * FROM openings WHERE order_id=? ORDER BY opening_no").all(orderId) as any[];
 export const inventoryFor = (skuId: string) => db().prepare("SELECT * FROM inventory WHERE sku_id=?").all(skuId) as { sku_id: string; branch: string; qty_on_hand: number; qty_allocated: number }[];
-export const available = (skuId: string, branch: string) => {
-  const r = db().prepare("SELECT qty_on_hand - qty_allocated AS a FROM inventory WHERE sku_id=? AND branch=?").get(skuId, branch) as { a: number } | undefined;
-  return r?.a ?? 0;
-};
+/** Simulated supplier policy: Oakridge will not Fast Track fire-rated wood doors. One rule, used by the lever enumerator and the supplier channel alike. */
+export const expediteEligible = (sku: Sku, sup: Supplier) => !sku.fire_rating || sup.id !== "SUP_OAK";
 
 /** Expected arrival at our dock for a PO. */
 export const poArrival = (po: PO) => addDays(po.current_ship_date, po.transit_days);
@@ -87,11 +86,13 @@ export function findAlternatives(orderId: string): Lever[] {
           touches: [], requires: "nothing", note: `${avail} on hand at ${inv.branch}` });
       }
     }
-    // 2. expedite with the supplier
-    const expArrival = addDays(addDays(t, sup.expedite_lead_days), po.transit_days);
-    out.push({ type: "expedite_po", po_id: po.id, params: { po_id: po.id, supplier_id: sup.id, fee_usd: sup.expedite_fee_usd, new_ship_date: addDays(t, sup.expedite_lead_days) },
-      cost_usd: sup.expedite_fee_usd, new_arrival: expArrival, days_saved: daysBetween(expArrival, poArrival(po)), closes_gap: expArrival <= order.promise_date,
-      touches: sup.expedite_fee_usd > order.order_value * 0.02 ? ["C4"] : [], requires: "nothing", note: `${sup.name} expedite: ${sup.expedite_lead_days}d lead + ${po.transit_days}d transit, fee $${sup.expedite_fee_usd}` });
+    // 2. expedite with the supplier (only when the supplier will honour it)
+    if (expediteEligible(sku, sup)) {
+      const expArrival = addDays(addDays(t, sup.expedite_lead_days), po.transit_days);
+      out.push({ type: "expedite_po", po_id: po.id, params: { po_id: po.id, supplier_id: sup.id, fee_usd: sup.expedite_fee_usd, new_ship_date: addDays(t, sup.expedite_lead_days) },
+        cost_usd: sup.expedite_fee_usd, new_arrival: expArrival, days_saved: daysBetween(expArrival, poArrival(po)), closes_gap: expArrival <= order.promise_date,
+        touches: sup.expedite_fee_usd > order.order_value * MAX_RECOVERY_PCT ? ["C4"] : [], requires: "nothing", note: `${sup.name} expedite: ${sup.expedite_lead_days}d lead + ${po.transit_days}d transit, fee $${sup.expedite_fee_usd}` });
+    }
     // 3. substitute an equivalent SKU in stock (same group AND same fire rating: C3)
     if (sku.substitutable_group) {
       const cands = db().prepare("SELECT * FROM skus WHERE substitutable_group=? AND id<>?").all(sku.substitutable_group, sku.id) as Sku[];
@@ -117,10 +118,11 @@ export function findAlternatives(orderId: string): Lever[] {
       touches: [], requires: "nothing", note: `${ready} openings can ship on time; late openings still need another lever` });
   }
   // 5. always available, always recommend-only
-  if (latePOs.length) out.push({ type: "change_promise_date", params: { new_promise_date: Math.max(...latePOs.map(p => Date.parse(poArrival(p)))) ? addDays(poArrival(latePOs[0]), 0) : order.promise_date },
+  // new date = the latest late arrival, so approving it actually closes the gap
+  if (latePOs.length) out.push({ type: "change_promise_date", params: { new_promise_date: latePOs.map(poArrival).reduce((a, b) => (b > a ? b : a)) },
     cost_usd: 0, days_saved: 0, closes_gap: true, touches: ["C1"], requires: "owner approval", note: "renegotiate with customer; owner approval required" });
   for (const l of out) {
-    const owner = l.touches.includes("C1") || l.touches.includes("C4") || (l.type === "expedite_po" && l.cost_usd > 0 && false);
+    const owner = l.touches.includes("C1") || l.touches.includes("C4");
     const consent = l.touches.includes("C2");
     l.requires = owner && consent ? "owner approval and customer consent" : consent ? "customer consent" : owner ? "owner approval" : "nothing";
   }

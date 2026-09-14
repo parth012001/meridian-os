@@ -6,7 +6,7 @@ import { MAX_RECOVERY_PCT } from "./charter.js";
 export interface GateInput {
   role: string;
   action: { type: ActionType; cost_usd: number; touches?: string[] };
-  order: { id: string; order_value: number; ship_policy: "complete" | "partial_ok"; hasFireRatedOpenings?: boolean };
+  order: { id: string; order_value: number; ship_policy: "complete" | "partial_ok" };
   /** Sum of already-executed recovery spend on this order. */
   spentSoFar: number;
   /** Set true when a customer_msg event with consent exists for this substitution. */
@@ -23,6 +23,7 @@ export function gate(charter: Charter, input: GateInput): GateResult {
     if (!role) return { verdict: "deny", rule: "ROLE", reason: `unknown role ${input.role}` };
     if (role.kind === "human") return { verdict: "execute", rule: "HUMAN", reason: "human principal acting directly" };
     const a = role.authority; const t = input.action.type;
+    const overLimit = t === "expedite_po" ? "expedite_over_limit" : `${t}_over_limit`;
 
     // 1. hard constraints (deny list) - checked before anything the role says
     if (t === "substitute_sku" && input.sameFireRating === false)
@@ -52,13 +53,14 @@ export function gate(charter: Charter, input: GateInput): GateResult {
 
     // 4. spend vs role authority
     if (input.action.cost_usd > a.spend_usd)
-      return { verdict: "approve", rule: "ROLE.spend_usd", reason: `$${input.action.cost_usd} exceeds ${input.role} limit $${a.spend_usd}`, approvalKind: "expedite_over_limit" };
+      return { verdict: "approve", rule: "ROLE.spend_usd", reason: `$${input.action.cost_usd} exceeds ${input.role} limit $${a.spend_usd}`, approvalKind: overLimit };
 
     // 5. C4: per-order recovery budget
     const cap = input.order.order_value * MAX_RECOVERY_PCT;
     if (input.spentSoFar + input.action.cost_usd > cap)
-      return { verdict: "approve", rule: "C4", reason: `$${input.spentSoFar + input.action.cost_usd} would exceed 2% of order value ($${cap.toFixed(0)})`, approvalKind: "expedite_over_limit" };
+      return { verdict: "approve", rule: "C4", reason: `$${input.spentSoFar + input.action.cost_usd} would exceed ${MAX_RECOVERY_PCT * 100}% of order value ($${cap.toFixed(0)})`, approvalKind: overLimit };
 
+    if (t === "substitute_sku" && input.customerConsent) return { verdict: "execute", rule: "C2", reason: "customer consent recorded; within authority" };
     return { verdict: "execute", rule: level === "act" ? "AUTONOMY.act" : "AUTONOMY.act_within_limit", reason: "within authority" };
   } catch (e) {
     return { verdict: "deny", rule: "GATE_ERROR", reason: `gate error, failing closed: ${(e as Error).message}` };

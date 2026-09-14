@@ -12,10 +12,12 @@ function App() {
   const [role, setRole] = useState<"owner" | "viewer">("owner");
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [charter, setCharter] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const refresh = useCallback(async () => setS(await api("/state")), []);
   useEffect(() => { refresh(); const i = setInterval(refresh, 1500); return () => clearInterval(i); }, [refresh]);
   if (!s) return <div style={{ padding: 20 }}>loading…</div>;
-  const act = (p: string, b?: unknown) => async () => { await api(p, b ?? {}, role); refresh(); };
+  const act = (p: string, b?: unknown) => async () => { const r = await api(p, b ?? {}, role); setErr(r?.error ?? null); refresh(); };
+  const owner = role === "owner";
   const k = s.kpis; const c = s.charter;
   const pend = s.approvals.filter((a: any) => a.status === "pending");
   const color = (d: number) => d === 0 ? "g" : d < 4 ? "a" : "r";
@@ -27,6 +29,7 @@ function App() {
       <span className={`badge ${s.mode.startsWith("live") ? "live" : ""}`}>{s.mode}</span>
       <span className="badge">Charter v{c.version}</span>
       {s.busy && <span className="badge">agent running…</span>}
+      {err && <span className="badge" style={{ color: "var(--bad)" }} title="click to dismiss" onClick={() => setErr(null)}>{err}</span>}
       <span style={{ flex: 1 }} />
       <span className="mute">acting as</span>
       <select value={role} onChange={e => setRole(e.target.value as any)} style={{ background: "#232838", color: "#fff", border: "1px solid #333", borderRadius: 6, padding: 4 }}>
@@ -46,11 +49,11 @@ function App() {
       <section className="wide">
         <h2>Scenario controls</h2>
         <div className="row">
-          <button onClick={act("/reset")}>↺ Reset world</button>
-          <button className="primary" onClick={act("/events/slip", { supplier_id: "SUP_IRON", category: "frame", days: 10, note: "Ironline PO ack variance" })}>⚡ Inject event: Ironline frames slip +10d</button>
-          <button onClick={act("/watch")}>👁 Run Ops Manager (watch cycle)</button>
+          <button onClick={act("/reset")} disabled={s.busy || !owner}>↺ Reset world</button>
+          <button className="primary" onClick={act("/events/slip", { supplier_id: "SUP_IRON", category: "frame", days: 10, note: "Ironline PO ack variance" })} disabled={s.busy || !owner}>⚡ Inject event: Ironline frames slip +10d</button>
+          <button onClick={act("/watch")} disabled={s.busy}>👁 Run Ops Manager (watch cycle)</button>
           <button onClick={act("/work")} disabled={s.busy}>🔧 Expeditor: work open tasks</button>
-          {awaitingConsent.map((o: any) => <button key={o.id} onClick={act("/customer/consent", { order_id: o.id })} disabled={s.busy}>✉️ Customer replies YES ({o.id})</button>)}
+          {awaitingConsent.map((o: any) => <button key={o.id} onClick={act("/customer/consent", { order_id: o.id })} disabled={s.busy || !owner}>✉️ Customer replies YES ({o.id})</button>)}
           <button onClick={act("/review")} disabled={s.busy}>📈 Run weekly Reviewer</button>
           <button onClick={async () => setCharter(charter ? null : await (await fetch("/api/charter/raw")).text())}>{charter ? "hide" : "view"} org.yaml</button>
         </div>

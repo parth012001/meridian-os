@@ -24,9 +24,22 @@ describe("gate", () => {
     const r = gate(charter, { role: "expeditor", action: { type: "substitute_sku", cost_usd: 42 }, order, spentSoFar: 0, sameFireRating: true });
     expect(r).toMatchObject({ verdict: "approve", rule: "C2" });
   });
-  it("substitution with consent executes", () => {
+  it("substitution with consent executes, and the ledger cites C2 as the deciding rule", () => {
     const r = gate(charter, { role: "expeditor", action: { type: "substitute_sku", cost_usd: 42 }, order, spentSoFar: 0, sameFireRating: true, customerConsent: true });
-    expect(r.verdict).toBe("execute");
+    expect(r).toMatchObject({ verdict: "execute", rule: "C2" });
+  });
+  it("names the over-limit approval after the action, not always 'expedite'", () => {
+    const r = gate(charter, { role: "expeditor", action: { type: "transfer_stock", cost_usd: 300 }, order, spentSoFar: 0 });
+    expect(r).toMatchObject({ verdict: "approve", rule: "ROLE.spend_usd", approvalKind: "transfer_stock_over_limit" });
+    const e = gate(charter, { role: "expeditor", action: { type: "expedite_po", cost_usd: 450 }, order, spentSoFar: 0 });
+    expect(e.approvalKind).toBe("expedite_over_limit");
+  });
+  it("an action class missing from autonomy_levels is observe-only (fails closed)", () => {
+    const { discount: _omit, ...levels } = charter.autonomy_levels;
+    const r = gate({ ...charter, autonomy_levels: levels }, { role: "owner_agent", action: { type: "discount", cost_usd: 0 }, order, spentSoFar: 0 });
+    expect(r.verdict).toBe("deny");
+    const c2 = { ...charter, autonomy_levels: levels, roles: { ...charter.roles, tester: { ...charter.roles.expeditor, authority: { ...charter.roles.expeditor.authority, may: ["discount" as const], may_not: [] } } } };
+    expect(gate(c2, { role: "tester", action: { type: "discount", cost_usd: 0 }, order, spentSoFar: 0 })).toMatchObject({ verdict: "deny", rule: "AUTONOMY" });
   });
   it("denies substitution across fire ratings regardless of consent (C3)", () => {
     const r = gate(charter, { role: "expeditor", action: { type: "substitute_sku", cost_usd: 0 }, order, spentSoFar: 0, sameFireRating: false, customerConsent: true });

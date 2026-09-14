@@ -1,10 +1,10 @@
 // Tool registry. Each role may only call the tools its Charter entry lists. Enforced in runRole, not by prompt.
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { db, uid, nowIso } from "./db.js";
-import { loadCharter, type ActionType } from "./charter.js";
+import { loadCharter, editablePaths, validateCharterPatch, MAX_RECOVERY_PCT, type ActionType } from "./charter.js";
 import { log } from "./ledger.js";
-import { getOrder, getCustomer, getSupplier, getSku, posForOrder, openingsForOrder, assessOrder, findAlternatives, poArrival, eventsForOrder, today, addDays, listOpenOrders } from "./world.js";
-import { proposeAction, spentOnOrder } from "./actions.js";
+import { getOrder, getCustomer, getSupplier, getSku, posForOrder, openingsForOrder, assessOrder, findAlternatives, poArrival, eventsForOrder, today, addDays, listOpenOrders, expediteEligible } from "./world.js";
+import { proposeAction, spentOnOrder, rejectedLevers } from "./actions.js";
 
 export interface ToolCtx { role: string; taskId?: string; orderId?: string; runId: string }
 export interface ToolDef { description: string; parameters: Record<string, unknown>; run: (args: any, ctx: ToolCtx) => unknown | Promise<unknown> }
@@ -23,7 +23,7 @@ export const TOOLS: Record<string, ToolDef> = {
         openings: openingsForOrder(order_id).length, fire_rated_openings: openingsForOrder(order_id).filter(x => x.fire_rated).length,
         pos: pos.map(p => ({ id: p.id, sku: p.sku_id, desc: getSku(p.sku_id).description, qty: p.qty, ship: p.current_ship_date, arrives: poArrival(p), late: poArrival(p) > o.promise_date })),
         late_pos: risk.latePOs.map(p => ({ id: p.id, sku: p.sku_id })),
-        recovery_spent_usd: spentOnOrder(order_id), recovery_cap_usd: Math.round(o.order_value * 0.02),
+        recovery_spent_usd: spentOnOrder(order_id), recovery_cap_usd: Math.round(o.order_value * MAX_RECOVERY_PCT),
         consent_events: eventsForOrder(order_id, "customer_consent").map(e => JSON.parse(e.payload)) };
     } },
 
@@ -34,7 +34,7 @@ export const TOOLS: Record<string, ToolDef> = {
     run: ({ po_id }, ctx) => {
       const po = db().prepare("SELECT * FROM purchase_orders WHERE id=?").get(po_id) as any; if (!po) return { error: "unknown PO" };
       const s = getSupplier(po.supplier_id); const sku = getSku(po.sku_id);
-      const eligible = !sku.fire_rating || s.id !== "SUP_OAK";
+      const eligible = expediteEligible(sku, s);
       log({ role: ctx.role, kind: "message", refType: "po", refId: po_id, summary: `supplier channel: asked ${s.name} for ETA on ${po_id}`, detail: { modality: "supplier_portal" } });
       return { supplier: s.name, po_id, confirmed_ship_date: po.current_ship_date, expedite_available: eligible, expedite_fee_usd: s.expedite_fee_usd,
         expedite_ship_date: addDays(today(), s.expedite_lead_days), note: eligible ? "Fast Track available, fee applies, no change orders after confirmation" : "not eligible for Fast Track" };
@@ -49,7 +49,8 @@ export const TOOLS: Record<string, ToolDef> = {
 
   no_action_needed: { description: "Escalate to the owner because NO lever closes the gap. Do not use when a lever closes the gap but needs approval or consent; propose that lever instead and the gate will route it.", parameters: { type: "object", properties: { order_id: { type: "string" }, reason: { type: "string" } }, required: ["order_id", "reason"], additionalProperties: false },
     run: ({ order_id, reason }, ctx) => {
-      const closers = findAlternatives(order_id).filter(l => l.closes_gap);
+      const rejected = ctx.taskId ? rejectedLevers(ctx.taskId) : new Set<string>();
+      const closers = findAlternatives(order_id).filter(l => l.closes_gap && !rejected.has(l.type));
       if (closers.length) return { error: `refused: ${closers.map(l => `${l.type} ($${l.cost_usd}, requires ${l.requires})`).join("; ")} would close the gap. Propose one of them; approval or consent is the gate's job, not a reason to stop.` };
       if (ctx.taskId) db().prepare("UPDATE tasks SET status='escalated' WHERE id=?").run(ctx.taskId);
       log({ role: ctx.role, kind: "outcome", refType: "task", refId: ctx.taskId, summary: `escalated ${order_id} to owner: ${reason}` });
@@ -82,7 +83,7 @@ export const TOOLS: Record<string, ToolDef> = {
       }
       const waits = Object.values(by).flatMap((b: any) => b.waits);
       return { by_type: by, expeditor_limit: loadCharter().roles.expeditor.authority.spend_usd,
-        editable_paths: ["roles.expeditor.authority.spend_usd", ...Object.keys(loadCharter().autonomy_levels).map(k => `autonomy_levels.${k}`)],
+        editable_paths: editablePaths(loadCharter()),
         how_to_propose: "call propose_charter_diff with path + value; prose is not a proposal", avg_approval_wait_min: waits.length ? Math.round(waits.reduce((a, b) => a + b, 0) / waits.length) : null,
         recovered_orders: (db().prepare("SELECT COUNT(*) c FROM tasks WHERE outcome='recovered'").get() as any).c };
     } },
@@ -91,13 +92,17 @@ export const TOOLS: Record<string, ToolDef> = {
     parameters: { type: "object", properties: { summary: { type: "string" }, evidence: { type: "string" }, path: { type: "string" }, value: { type: ["number", "string"] } }, required: ["summary", "evidence", "path", "value"], additionalProperties: false },
     run: ({ summary, evidence, path, value }, ctx) => {
       const parts = String(path).split(".");
-      let cur: any = loadCharter();
+      const charter = loadCharter(); const editable = editablePaths(charter);
+      if (!editable.includes(path)) return { error: `path ${path} is not editable; proposals may only change: ${editable.join(", ")}` };
+      let cur: any = charter;
       for (const k of parts) { if (cur === null || typeof cur !== "object" || !(k in cur)) return { error: `path ${path} does not exist in the Charter; proposals may only change existing values` }; cur = cur[k]; }
       if (typeof cur === "object") return { error: `path ${path} is not a scalar value` };
       if (typeof cur !== typeof value) return { error: `value must be a ${typeof cur} (current: ${JSON.stringify(cur)})` };
-      if (parts[0] !== "roles" && parts[0] !== "autonomy_levels") return { error: "proposals may only touch roles.* or autonomy_levels.*" };
+      if (typeof value === "number" && !(Number.isFinite(value) && value >= 0)) return { error: "value must be a finite number >= 0" };
       const patch: any = {}; let node = patch;
       parts.forEach((k, i) => { node[k] = i === parts.length - 1 ? value : {}; node = node[k]; });
+      const check = validateCharterPatch(patch);   // same validation the merge runs, so the owner never sees a proposal that cannot merge
+      if (!check.ok) return { error: `${JSON.stringify(value)} is not a valid value for ${path}: ${check.error}` };
       const id = uid("prop");
       db().prepare("INSERT INTO charter_proposals (id, proposed_by, summary, evidence, patch) VALUES (?,?,?,?,?)").run(id, ctx.role, summary, evidence, JSON.stringify(patch));
       log({ role: ctx.role, kind: "propose", refType: "charter_proposal", refId: id, summary: `charter diff proposed: ${summary} (${path}: ${JSON.stringify(cur)} -> ${JSON.stringify(value)})`, detail: { evidence, patch } });

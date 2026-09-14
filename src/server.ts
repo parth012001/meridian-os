@@ -12,7 +12,7 @@ import { runWatcher, workOpenTasks, ownerDecides, customerConsents, runReviewer,
 import { recentLedger, log } from "./ledger.js";
 import { MOCK, MODEL } from "./llm.js";
 
-const app = new Hono();
+export const app = new Hono();
 const role = (c: any) => (c.req.header("x-role") ?? "viewer") as string;
 const ownerOnly = (c: any) => role(c) === "owner" ? null : c.json({ error: "owner role required (x-role: owner)" }, 403);
 let busy = false;
@@ -21,7 +21,6 @@ const guard = async (c: any, fn: () => Promise<unknown>) => {
   busy = true; try { return c.json(await fn()); } catch (e) { return c.json({ error: (e as Error).message }, 500); } finally { busy = false; }
 };
 
-if (!existsSync(process.env.DB_PATH ?? "") ) { try { db().prepare("SELECT 1 FROM orders LIMIT 1").get(); } catch { seed(); } }
 if ((db().prepare("SELECT COUNT(*) c FROM orders").get() as any).c === 0) seed();
 
 app.get("/api/state", c => {
@@ -42,22 +41,34 @@ app.get("/api/charter/raw", c => c.text(rawCharterText()));
 app.get("/api/orders/:id/levers", c => c.json(findAlternatives(c.req.param("id"))));
 app.get("/api/ledger", c => c.json(recentLedger(Number(c.req.query("limit") ?? 500))));
 
-app.post("/api/reset", c => { seed(); restoreBaselineCharter(); log({ role: role(c), kind: "observe", summary: "world reset by " + role(c) }); return c.json({ ok: true }); });
-app.post("/api/events/slip", async c => {
-  const b = await c.req.json().catch(() => ({}));
-  const ids = applySupplierSlip(b.supplier_id ?? "SUP_IRON", b.category ?? "frame", Number(b.days ?? 10), b.note ?? "PO acknowledgement variance");
-  log({ role: "world", kind: "observe", summary: `event supplier_ack_slip: ${b.supplier_id ?? "SUP_IRON"} ${b.category ?? "frame"} +${b.days ?? 10}d touched ${ids.join(", ")}` });
-  return c.json({ touched: ids });
+// Scenario controls stand in for the outside world (reset, supplier feed, customer inbox). Owner-only, and never while an agent is mid-run.
+app.post("/api/reset", c => {
+  const denied = ownerOnly(c); if (denied) return denied;
+  return guard(c, async () => { seed(); restoreBaselineCharter(); log({ role: role(c), kind: "observe", summary: "world reset by " + role(c) }); return { ok: true }; });
 });
-app.post("/api/watch", c => c.json(runWatcher()));
+app.post("/api/events/slip", async c => {
+  const denied = ownerOnly(c); if (denied) return denied;
+  const b = await c.req.json().catch(() => ({}));
+  return guard(c, async () => {
+    const ids = applySupplierSlip(b.supplier_id ?? "SUP_IRON", b.category ?? "frame", Number(b.days ?? 10), b.note ?? "PO acknowledgement variance");
+    log({ role: "world", kind: "observe", summary: `event supplier_ack_slip: ${b.supplier_id ?? "SUP_IRON"} ${b.category ?? "frame"} +${b.days ?? 10}d touched ${ids.join(", ")}` });
+    return { touched: ids };
+  });
+});
+app.post("/api/watch", c => guard(c, async () => runWatcher()));
 app.post("/api/work", c => guard(c, () => workOpenTasks()));
 app.post("/api/tasks/:id/work", c => guard(c, () => runExpeditor(c.req.param("id"))));
 app.post("/api/approvals/:id", async c => {
   const denied = ownerOnly(c); if (denied) return denied;
   const b = await c.req.json().catch(() => ({}));
-  return guard(c, () => ownerDecides(c.req.param("id"), b.decision === "rejected" ? "rejected" : "approved", b.note));
+  if (b.decision !== "approved" && b.decision !== "rejected") return c.json({ error: "decision must be 'approved' or 'rejected'" }, 400);   // fail closed: never infer approval
+  return guard(c, () => ownerDecides(c.req.param("id"), b.decision, b.note));
 });
-app.post("/api/customer/consent", async c => { const b = await c.req.json().catch(() => ({})); return guard(c, () => customerConsents(b.order_id)); });
+app.post("/api/customer/consent", async c => {
+  const denied = ownerOnly(c); if (denied) return denied;
+  const b = await c.req.json().catch(() => ({}));
+  return guard(c, () => customerConsents(b.order_id));
+});
 app.post("/api/review", c => guard(c, () => runReviewer()));
 app.post("/api/proposals/:id", async c => {
   const denied = ownerOnly(c); if (denied) return denied;
@@ -65,7 +76,9 @@ app.post("/api/proposals/:id", async c => {
   const p = db().prepare("SELECT * FROM charter_proposals WHERE id=?").get(c.req.param("id")) as any;
   if (!p || p.status !== "proposed") return c.json({ error: "not a pending proposal" }, 400);
   if (b.decision === "merge") {
-    const ch = applyCharterPatch(JSON.parse(p.patch));
+    let ch;
+    try { ch = applyCharterPatch(JSON.parse(p.patch)); }
+    catch (e) { return c.json({ error: `patch no longer applies to the current Charter: ${(e as Error).message}` }, 400); }   // proposal stays 'proposed'
     db().prepare("UPDATE charter_proposals SET status='merged', decided_by='owner', decided_at=datetime('now') WHERE id=?").run(p.id);
     log({ role: "owner", kind: "charter_change", refType: "charter_proposal", refId: p.id, summary: `Charter v${ch.version}: ${p.summary}`, detail: JSON.parse(p.patch) });
     return c.json({ merged: true, version: ch.version });
@@ -76,5 +89,7 @@ app.post("/api/proposals/:id", async c => {
 });
 
 if (existsSync("web/dist")) { app.use("/*", serveStatic({ root: "./web/dist" })); app.get("*", serveStatic({ path: "./web/dist/index.html" })); }
-const port = Number(process.env.PORT ?? 3000);
-serve({ fetch: app.fetch, port }, () => console.log(`Meridian OS on http://localhost:${port}  mode=${MOCK ? "mock" : MODEL}`));
+if (process.argv[1] && /server\.(ts|js)$/.test(process.argv[1])) {
+  const port = Number(process.env.PORT ?? 3000);
+  serve({ fetch: app.fetch, port }, () => console.log(`Meridian OS on http://localhost:${port}  mode=${MOCK ? "mock" : MODEL}`));
+}
