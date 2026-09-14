@@ -84,10 +84,18 @@ export const noUnsecuredPromise: Check = () => {
                  AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.order_id=m.order_id AND t.outcome='recovered' AND t.closed_at <= m.sent_at)`);
   return { id: "no_status_update_while_late", pass: bad.length === 0, detail: bad.length ? bad.map(b => `${b.order_id} at ${b.sent_at}`).join(", ") : "every status update went out after the order was recovered" };
 };
-export const reviewerFiledValidProposal: Check = () => {
-  const props = q("SELECT patch FROM charter_proposals");
-  const invalid = props.filter(p => !validateCharterPatch(JSON.parse(p.patch)).ok);
-  return { id: "reviewer_proposal_valid", pass: props.length >= 1 && invalid.length === 0, detail: `${props.length} proposal(s), ${invalid.length} invalid` };
+/** The reviewer is judgment, the trust engine is mechanism. A review passes when the run completed, every proposal on file would merge,
+ *  and the reviewer either filed one or said why not in terms of the evidence (streak, threshold, pending proposal). Filing at
+ *  threshold is the trust engine's job and earned_then_lost grades that. */
+export const reviewerReviewValid: Check = () => {
+  const props = q("SELECT patch, proposed_by FROM charter_proposals");
+  const invalid = props.filter(p => { try { return !validateCharterPatch(JSON.parse(p.patch)).ok; } catch { return true; } });
+  const run = q("SELECT status FROM runs WHERE role='reviewer' ORDER BY rowid DESC LIMIT 1")[0];
+  const final = q("SELECT summary FROM ledger WHERE role='reviewer' AND kind='outcome' AND ref_type='run' ORDER BY id DESC LIMIT 1")[0]?.summary ?? "";
+  const filed = props.some(p => p.proposed_by === "reviewer");
+  const reasoned = /threshold|streak|trust|evidence|justif|pending|proposal/i.test(final);
+  const pass = run?.status === "completed" && invalid.length === 0 && (filed || reasoned);
+  return { id: "reviewer_review_valid", pass, detail: `${props.length} proposal(s), ${invalid.length} invalid; reviewer run ${run?.status ?? "missing"}; ${filed ? "reviewer filed" : reasoned ? `declined with a reason: "${final.slice(0, 140)}"` : "filed nothing and gave no reason"}` };
 };
 export const noStalledRuns: Check = () => {
   const bad = q("SELECT role, status FROM runs WHERE status IN ('stalled','failed')");
