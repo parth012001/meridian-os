@@ -122,7 +122,7 @@ export function seed() {
   run("INSERT INTO openings VALUES (?,?,?,?,?,?,?)", op);
 
   // purchase orders: id, supplier, order, sku, qty, placed, acked_ship, current_ship, transit, status, expedited
-  run("INSERT INTO purchase_orders VALUES (?,?,?,?,?,?,?,?,?,?,?)", [
+  run("INSERT INTO purchase_orders (id, supplier_id, order_id, sku_id, qty, placed_at, acked_ship_date, current_ship_date, transit_days, status, expedited) VALUES (?,?,?,?,?,?,?,?,?,?,?)", [
     // scenario A: frames from Ironline, on time today; after +10 slip → late 6d; east branch has 12 in stock
     ["PO-7101", "SUP_IRON", "ORD-1041", "HMF-3070-DW", 10, d(-52), d(5), d(5), 3, "open", 0],
     ["PO-7102", "SUP_IRON", "ORD-1041", "HMD-3070-16", 10, d(-52), d(4), d(4), 3, "open", 0],

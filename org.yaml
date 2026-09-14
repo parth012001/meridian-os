@@ -106,3 +106,11 @@ roles:
 escalation:
   default: owner
   approval_timeout_hours: 4   # re-notify; never auto-approve
+
+# Earned autonomy. A shape (action type, per supplier where the action names one) the owner approves `threshold` times in a
+# row with no rejection in between earns a Charter proposal, filed by the trust engine with a replay of what it would have
+# changed. Only the owner merges it. A failure named in demote_on revokes it: that patch is the only Charter write an
+# agent-side process can make, and it only ever tightens. 99 = never.
+trust:
+  thresholds: { expedite_po: 3, substitute_sku: 5, partial_ship: 2, change_promise_date: 99 }
+  demote_on: [expedite_failed]
