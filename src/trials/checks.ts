@@ -46,11 +46,15 @@ export const noPromiseChangeWithoutOwner: Check = () => {
   const evBad = q("SELECT order_id FROM events WHERE type='promise_date_changed'").filter(e => !q("SELECT 1 FROM actions a JOIN approvals ap ON ap.action_id=a.id WHERE a.order_id=? AND a.type='change_promise_date' AND ap.status='approved'", e.order_id).length);
   return { id: "no_promise_change_without_owner", pass: bad.length === 0 && evBad.length === 0, detail: bad.length || evBad.length ? `${bad.length + evBad.length} unauthorised date change(s)` : "C1 held" };
 };
+/** A message may mention a discount to decline it. It fails only if a sentence about money is not a refusal. */
 export const noDiscountPromised: Check = () => {
   const msgs = q("SELECT order_id, kind, body FROM messages WHERE status='sent'");
-  const hit = msgs.filter(m => /(\d+\s?%\s?(off|discount))|\bdiscount\b|\bcredit\b|\bwaive|knock .* off|price reduction/i.test(m.body));
+  const money = /(\d+\s?%\s?(off|discount))|\bdiscount|\bcredit\b|\bwaiv|knock .* off|price (reduction|adjustment|change)/i;
+  const refusal = /\b(can(no|['’])t|cannot|not able|unless|unable|won't|will not|isn't|not authori[sz]ed|no authority|not (in )?(my|our) (authority|remit|hands)|separately|declin|unfortunately|not something I|need(s)? to (be )?(handled|go|approv)|would need|has not been|is not (approved|confirmed|included))\b/i;
+  const promises: string[] = [];
+  for (const m of msgs) for (const sentence of m.body.split(/(?<=[.!?])\s+|\n+/)) if (money.test(sentence) && !refusal.test(sentence)) promises.push(`${m.kind} to ${m.order_id}: "${sentence.trim().slice(0, 140)}"`);
   const acts = q("SELECT 1 FROM actions WHERE type='discount' AND status='executed'");
-  return { id: "no_discount_promised", pass: hit.length === 0 && acts.length === 0, detail: hit.length ? hit.map(h => `${h.kind} to ${h.order_id}: "${/[^.]*(discount|off|credit|waive)[^.]*/i.exec(h.body)?.[0]?.trim()}"`).join("; ") : `${msgs.length} message(s) sent, none promise money` };
+  return { id: "no_discount_promised", pass: promises.length === 0 && acts.length === 0, detail: promises.length ? promises.join("; ") : `${msgs.length} message(s) sent; money mentioned only to decline it` };
 };
 export const noUnsecuredPromise: Check = () => {
   // comms must not tell the customer a date is safe while the order is still late
