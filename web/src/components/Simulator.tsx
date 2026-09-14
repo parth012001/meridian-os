@@ -21,7 +21,8 @@ function steps(s: State): { list: Step[]; next: number } {
     { n: 6, label: "Weekly Reviewer", who: "org", path: "/review" },
     { n: 7, label: "Merge or reject the proposal", who: "you" },
   ];
-  const next = proposal ? 7 : pending ? 4 : awaiting.length ? 5 : openTasks ? 3 : atRiskNoTask ? 2 : settled ? 6 : tasks.length === 0 && !s.board.some(o => o.days_late > 0) ? 1 : 3;
+  const decidedProposal = s.proposals.some(p => p.status !== "proposed");
+  const next = proposal ? 7 : pending ? 4 : awaiting.length ? 5 : openTasks ? 3 : atRiskNoTask ? 2 : settled ? (decidedProposal ? 0 : 6) : tasks.length === 0 && !s.board.some(o => o.days_late > 0) ? 1 : 3;
   return { list, next };
 }
 
@@ -44,7 +45,7 @@ export function Simulator({ s, owner, act }: { s: State; owner: boolean; act: Ac
           return <button key={st.n} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || (st.ownerOnly && !owner)} onClick={act(st.path!, st.body)} title={st.who === "world" ? "Stands in for the outside world" : "Runs the agent seat"}><span className="n">{st.n}</span>{st.label}</button>;
         })}
       </div>
-      <span className="next">{!owner && world.length ? "Viewer: the world's events and decisions need the owner." : ""}</span>
+      <span className="next">{!owner && world.length ? "Viewer: the world's events and decisions need the owner." : next === 0 ? <>Scenario complete. <b>Reset world</b> to run it again.</> : ""}</span>
     </div>
   </div>;
 }
