@@ -1,10 +1,11 @@
 // Tool registry. Each role may only call the tools its Charter entry lists. Enforced in runRole, not by prompt.
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { db, uid, nowIso } from "./db.js";
-import { loadCharter, editablePaths, validateCharterPatch, MAX_RECOVERY_PCT, type ActionType } from "./charter.js";
+import { loadCharter, editablePaths, MAX_RECOVERY_PCT, type ActionType } from "./charter.js";
 import { log } from "./ledger.js";
 import { getOrder, getCustomer, getSupplier, getSku, posForOrder, openingsForOrder, assessOrder, findAlternatives, poArrival, eventsForOrder, today, addDays, listOpenOrders, expediteEligible, supplierReplyOverride } from "./world.js";
 import { proposeAction, spentOnOrder, closedLevers } from "./actions.js";
+import { fileProposal, trustView, parseReplay, pathOf, valueAt } from "./trust.js";
 
 export interface ToolCtx { role: string; taskId?: string; orderId?: string; runId: string }
 export interface ToolDef { description: string; parameters: Record<string, unknown>; run: (args: any, ctx: ToolCtx) => unknown | Promise<unknown> }
@@ -74,7 +75,7 @@ export const TOOLS: Record<string, ToolDef> = {
       return { message_id: id, status: auto ? "sent" : "pending_review" };
     } },
 
-  read_ledger_stats: { description: "Aggregate outcomes from the ledger by action type: executed, approved, rejected, costs, wait times.", parameters: { type: "object", properties: {}, additionalProperties: false },
+  read_ledger_stats: { description: "Aggregate outcomes from the ledger by action type (executed, approved, rejected, costs, wait times), the trust ledger (streak per action shape toward its Charter threshold), and the Charter proposals already awaiting the owner with their replay.", parameters: { type: "object", properties: {}, additionalProperties: false },
     run: () => {
       const rows = db().prepare(`SELECT a.type, a.status, a.cost_usd, ap.status ap_status, ap.created_at ap_created, ap.decided_at
                                   FROM actions a LEFT JOIN approvals ap ON ap.action_id=a.id`).all() as any[];
@@ -86,9 +87,20 @@ export const TOOLS: Record<string, ToolDef> = {
         if (r.ap_status === "rejected") b.rejected++;
       }
       const waits = Object.values(by).flatMap((b: any) => b.waits);
-      return { by_type: by, expeditor_limit: loadCharter().roles.expeditor.authority.spend_usd,
-        editable_paths: editablePaths(loadCharter()),
-        how_to_propose: "call propose_charter_diff with path + value; prose is not a proposal", avg_approval_wait_min: waits.length ? Math.round(waits.reduce((a, b) => a + b, 0) / waits.length) : null,
+      const charter = loadCharter();
+      const pending = (db().prepare("SELECT * FROM charter_proposals WHERE status='proposed' ORDER BY rowid").all() as any[]).map(p => {
+        const target = (() => { try { return pathOf(JSON.parse(p.patch)); } catch { return null; } })();
+        const r = parseReplay(p.replay);
+        return { id: p.id, proposed_by: p.proposed_by, summary: p.summary, path: target?.path ?? null, from: target ? valueAt(charter, target.path) : null, to: target?.value ?? null, shape: p.shape,
+          replay: r ? { would_have_auto_executed: r.would_have_auto_executed, total_usd: r.total_usd, still_parked: r.still_parked, any_rejected: r.any_rejected, rejected_would_have_executed: r.rejected_would_have_executed } : null };
+      });
+      return { by_type: by, expeditor_limit: charter.roles.expeditor.authority.spend_usd,
+        trust: trustView().map(t => ({ shape: t.shape, streak: t.streak, threshold: t.threshold, status: t.status, total_approved: t.total_approved, total_rejected: t.total_rejected, total_failed: t.total_failed, total_autonomous: t.total_autonomous, evidence_approvals: t.evidence.map(e => e.approval_id) })),
+        trust_thresholds: charter.trust.thresholds,
+        pending_proposals: pending,
+        editable_paths: editablePaths(charter),
+        how_to_propose: "call propose_charter_diff with path + value; prose is not a proposal. If pending_proposals already holds one for the change you would make, explain it in one line instead of filing again.",
+        avg_approval_wait_min: waits.length ? Math.round(waits.reduce((a, b) => a + b, 0) / waits.length) : null,
         recovered_orders: (db().prepare("SELECT COUNT(*) c FROM tasks WHERE outcome='recovered'").get() as any).c };
     } },
 
@@ -105,12 +117,8 @@ export const TOOLS: Record<string, ToolDef> = {
       if (typeof value === "number" && !(Number.isFinite(value) && value >= 0)) return { error: "value must be a finite number >= 0" };
       const patch: any = {}; let node = patch;
       parts.forEach((k, i) => { node[k] = i === parts.length - 1 ? value : {}; node = node[k]; });
-      const check = validateCharterPatch(patch);   // same validation the merge runs, so the owner never sees a proposal that cannot merge
-      if (!check.ok) return { error: `${JSON.stringify(value)} is not a valid value for ${path}: ${check.error}` };
-      const id = uid("prop");
-      db().prepare("INSERT INTO charter_proposals (id, proposed_by, summary, evidence, patch) VALUES (?,?,?,?,?)").run(id, ctx.role, summary, evidence, JSON.stringify(patch));
-      log({ role: ctx.role, kind: "propose", refType: "charter_proposal", refId: id, summary: `charter diff proposed: ${summary} (${path}: ${JSON.stringify(cur)} -> ${JSON.stringify(value)})`, detail: { evidence, patch } });
-      return { proposal_id: id, status: "proposed", current: cur, proposed: value };
+      // same validation the merge runs, so the owner never sees a proposal that cannot merge; the replay is attached whoever files
+      return fileProposal({ by: ctx.role, summary, evidence, patch });
     } },
 };
 

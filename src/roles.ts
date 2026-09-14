@@ -42,7 +42,7 @@ export async function runComms(orderId: string, kind: "status_update" | "substit
 }
 
 export async function runReviewer() {
-  return runRole("reviewer", "Weekly review: call read_ledger_stats, then either file exactly one Charter change with propose_charter_diff (path + value + evidence) or state in one line that the evidence does not justify a change. A proposal that is only described in text does not exist.", {});
+  return runRole("reviewer", "Weekly review: call read_ledger_stats. The trust ledger in it counts clean owner approvals per action shape toward a Charter threshold; at threshold the trust engine files a proposal with a replay (pending_proposals). If a proposal is already pending, explain it to the owner in one or two lines (shape, streak, what the replay says, whether anything was rejected) and file nothing. Otherwise either file exactly one Charter change with propose_charter_diff (path + value + evidence) or state in one line that the evidence does not justify a change. A proposal that is only described in text does not exist.", {});
 }
 
 /** Owner decision handler. Approval of an action also covers the customer notice it implies (C5 satisfied by the same signature). */

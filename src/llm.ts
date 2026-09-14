@@ -105,6 +105,12 @@ function mockTurn(messages: ChatCompletionMessageParam[], role: string): LlmTurn
     if (!called.includes("read_ledger_stats")) return call("read_ledger_stats", {});
     if (!called.includes("propose_charter_diff")) {
       const s = lastToolResult(messages, "read_ledger_stats");
+      const filed = s?.pending_proposals?.find((p: any) => p.proposed_by === "trust");
+      if (filed) {
+        const t = s.trust?.find((x: any) => x.shape === filed.shape);
+        const r = filed.replay ?? {};
+        return done(`The trust ledger has earned this one: ${filed.shape} is at ${t?.streak ?? "?"}/${t?.threshold ?? "?"} clean approvals, so the trust engine filed ${filed.id} (${filed.path}: ${filed.from} -> ${filed.to}). Replay: ${r.would_have_auto_executed ?? 0} of ${(r.would_have_auto_executed ?? 0) + (r.still_parked ?? 0)} past approvals ($${r.total_usd ?? 0}) would have executed without you${r.still_parked ? `, ${r.still_parked} would still park under a hard constraint` : ""}${r.any_rejected ? "; WARNING: it would also have executed something you rejected" : "; nothing you rejected"}. Waiting on the owner; no new diff.`);
+      }
       const exp = s?.by_type?.expedite_po;
       if (exp && exp.approved > 0 && exp.rejected === 0) {
         return call("propose_charter_diff", {

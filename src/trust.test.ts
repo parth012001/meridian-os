@@ -19,7 +19,10 @@ import { loadCharter, restoreBaselineCharter } from "./charter.js";
 import { applySupplierSlip } from "./world.js";
 import { runWatcher, workOpenTasks, ownerDecides } from "./roles.js";
 import { decideApproval } from "./actions.js";
-import { recordOutcome, trustRows, shapeOf } from "./trust.js";
+import { recordOutcome, trustRows, shapeOf, buildReplay, mergeProposal, rejectProposal } from "./trust.js";
+import { TOOLS } from "./tools.js";
+import { runReviewer } from "./roles.js";
+import { app } from "./server.js";
 import { seedExpediteOrders } from "./trials/scenarios.js";
 
 const q = <T = any>(sql: string, ...a: unknown[]) => db().prepare(sql).all(...a) as T[];
@@ -27,6 +30,13 @@ const one = <T = any>(sql: string, ...a: unknown[]) => db().prepare(sql).get(...
 const pending = () => q("SELECT ap.id, ap.kind, a.order_id, a.type FROM approvals ap JOIN actions a ON a.id=ap.action_id WHERE ap.status='pending' ORDER BY ap.rowid");
 const trust = (shape: string) => one("SELECT * FROM trust WHERE shape=?", shape);
 const slipFrames = () => applySupplierSlip("SUP_IRON", "frame", 10, "test");
+const proposals = (where = "1=1") => q(`SELECT * FROM charter_proposals WHERE ${where} ORDER BY rowid`);
+const approveAll = async (filter: (a: any) => boolean = () => true) => { for (const a of pending().filter(filter)) await ownerDecides(a.id, "approved"); };
+/** Three Ironline expedite approvals in one pass: ORD-1042 plus two $25k orders of the same shape. */
+const earnThree = async () => { seedExpediteOrders(2); slipFrames(); runWatcher(); await workOpenTasks(); await approveAll(a => a.type === "expedite_po"); };
+const post = (path: string, body: unknown = {}, role?: string) =>
+  app.request(path, { method: "POST", headers: { "content-type": "application/json", ...(role ? { "x-role": role } : {}) }, body: JSON.stringify(body) });
+const get = (path: string) => app.request(path);
 const editCharter = (from: string | RegExp, to: string) => {
   const p = process.env.CHARTER_PATH!;
   writeFileSync(p, readFileSync(p, "utf8").replace(from, to));
@@ -93,5 +103,125 @@ describe("streaks", () => {
   it("a Charter without a trust block still parses, and nothing is ever counted", () => {
     editCharter(/\ntrust:\n(  .*\n)+/, "\n");
     expect(loadCharter().trust).toEqual({ thresholds: {}, demote_on: ["expedite_failed"] });
+  });
+});
+
+describe("replay", () => {
+  const raise = { roles: { expeditor: { authority: { spend_usd: 450 } } } };
+  it("re-runs the gate over past parked actions under the patched Charter; a hard constraint still parks what it parked", async () => {
+    slipFrames(); runWatcher(); await workOpenTasks();
+    await ownerDecides(pending().find(a => a.order_id === "ORD-1042")!.id, "approved");
+    const r = buildReplay(raise)!;
+    expect(r).toMatchObject({ path: "roles.expeditor.authority.spend_usd", before: 250, after: 450, evaluated: 1, would_have_auto_executed: 0, total_usd: 0, still_parked: 1, any_rejected: false });
+    expect(r.rows[0]).toMatchObject({ order_id: "ORD-1042", cost_usd: 450, decision: "approved", before_rule: "ROLE.spend_usd", after_verdict: "approve", after_rule: "C4", flips: false });   // $450 > 2% of $18,500
+  });
+  it("counts the approvals that would have executed without the owner, and their dollars", async () => {
+    await earnThree();
+    const r = buildReplay(raise)!;
+    expect(r).toMatchObject({ evaluated: 3, would_have_auto_executed: 2, total_usd: 900, still_parked: 1, rejected_would_have_executed: 0, any_rejected: false });
+    expect(r.rows.filter(x => x.flips).map(x => x.order_id).sort()).toEqual(["ORD-3001", "ORD-3002"]);
+    for (const x of r.rows.filter(x => x.flips)) expect(one("SELECT status FROM approvals WHERE id=?", x.approval_id).status).toBe("approved");
+  });
+  it("flags a change that would have executed something the owner rejected", async () => {
+    seedExpediteOrders(1); slipFrames(); runWatcher(); await workOpenTasks();
+    await ownerDecides(pending().find(a => a.order_id === "ORD-3001")!.id, "rejected", "not this one");
+    const r = buildReplay(raise)!;
+    expect(r).toMatchObject({ would_have_auto_executed: 0, rejected_would_have_executed: 1, any_rejected: true });
+  });
+  it("fails closed on a patch that does not parse as a Charter", () => {
+    expect(buildReplay({ autonomy_levels: { expedite_po: "yolo" } })).toBeNull();
+    expect(buildReplay({})).toBeNull();
+  });
+});
+
+describe("proposals from trust", () => {
+  it("at threshold the engine files a proposal with the replay, marks the shape proposed, and files no second one", async () => {
+    await earnThree();
+    const row = trust("expedite_po:SUP_IRON"); expect(row).toMatchObject({ streak: 3, threshold: 3, status: "proposed" });
+    const p = proposals("proposed_by='trust'"); expect(p).toHaveLength(1);
+    expect(p[0]).toMatchObject({ status: "proposed", shape: "expedite_po:SUP_IRON", patch: JSON.stringify({ roles: { expeditor: { authority: { spend_usd: 450 } } } }) });
+    const replay = JSON.parse(p[0].replay);
+    expect(replay).toMatchObject({ would_have_auto_executed: 2, total_usd: 900, still_parked: 1, any_rejected: false, streak: { shape: "expedite_po:SUP_IRON", streak: 3, threshold: 3 } });
+    expect(replay.streak.evidence.map((e: any) => e.approval_id)).toEqual(JSON.parse(row.evidence).map((e: any) => e.approval_id));
+    expect(p[0].evidence).toMatch(/2 of 3 .*would have executed without you/);
+    expect(q("SELECT 1 FROM ledger WHERE role='trust' AND kind='propose' AND charter_rule='TRUST.threshold' AND ref_id=?", p[0].id).length).toBe(1);
+    // a fourth clean approval of the same shape counts, but does not file again
+    seedExpediteOrders(1, { from: 3 }); applySupplierSlip("SUP_IRON", "frame", 10, "again"); runWatcher(); await workOpenTasks();
+    await ownerDecides(pending().find(a => a.order_id === "ORD-3003")!.id, "approved");
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ streak: 3, total_approved: 4, status: "proposed" });
+    expect(proposals("proposed_by='trust'")).toHaveLength(1);
+  });
+  it("a rejection while the proposal is pending makes it stale and the shape starts over", async () => {
+    await earnThree();
+    seedExpediteOrders(1, { from: 3 }); applySupplierSlip("SUP_IRON", "frame", 10, "again"); runWatcher(); await workOpenTasks();
+    await ownerDecides(pending().find(a => a.order_id === "ORD-3003")!.id, "rejected", "no");
+    expect(proposals("proposed_by='trust'")[0].status).toBe("stale");
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ streak: 0, status: "supervised", evidence: "[]" });
+    expect(q("SELECT 1 FROM ledger WHERE role='trust' AND charter_rule='TRUST.stale'").length).toBe(1);
+    expect((await post(`/api/proposals/${proposals()[0].id}`, { decision: "merge" }, "owner")).status).toBe(400);   // stale cannot be merged
+  });
+  it("when no editable Charter value would release the streak's approvals, nothing is filed and the ledger says why", async () => {
+    seedExpediteOrders(3, { value: 10000 });   // 2% cap $200: every $450 expedite stays parked under C4 whatever the role limit
+    slipFrames(); runWatcher(); await workOpenTasks(); await approveAll(a => a.type === "expedite_po" && a.order_id !== "ORD-1042");
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ streak: 3, status: "supervised" });
+    expect(proposals()).toEqual([]);
+    expect(q("SELECT summary FROM ledger WHERE role='trust' AND kind='observe' AND summary LIKE '%3/3 but no proposal was filed%' AND summary LIKE '%C4%'").length).toBe(1);
+  });
+  it("the owner's merge grants autonomy and records what it replaced; the owner's rejection starts the shape over", async () => {
+    await earnThree();
+    const p = proposals("proposed_by='trust'")[0];
+    expect(mergeProposal(p.id, "owner")).toMatchObject({ merged: true, version: 2, shape: "expedite_po:SUP_IRON" });
+    expect(loadCharter().roles.expeditor.authority.spend_usd).toBe(450);
+    const row = trust("expedite_po:SUP_IRON");
+    expect(row.status).toBe("autonomous");
+    expect(JSON.parse(row.grant)).toMatchObject({ path: "roles.expeditor.authority.spend_usd", before: 250, after: 450, proposal_id: p.id, charter_version: 2 });
+    expect(one("SELECT status, decided_by FROM charter_proposals WHERE id=?", p.id)).toEqual({ status: "merged", decided_by: "owner" });
+    expect(q("SELECT 1 FROM ledger WHERE role='owner' AND kind='charter_change' AND ref_id=?", p.id).length).toBe(1);
+    expect(() => mergeProposal(p.id, "owner")).toThrow(/not a pending proposal/);
+    // and rejection
+    seed(); restoreBaselineCharter(); await earnThree();
+    const p2 = proposals("proposed_by='trust'")[0];
+    expect(rejectProposal(p2.id, "owner")).toMatchObject({ merged: false, shape: "expedite_po:SUP_IRON" });
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ status: "supervised", streak: 0, evidence: "[]", grant: null });
+    expect(loadCharter().version).toBe(1);
+  });
+  it("merging a reviewer proposal changes the Charter but grants no shape autonomy", async () => {
+    slipFrames(); runWatcher(); await workOpenTasks(); await approveAll(a => a.order_id === "ORD-1042");
+    await runReviewer();
+    const p = proposals("proposed_by='reviewer'")[0]; expect(p.shape).toBeNull();
+    expect(JSON.parse(p.replay)).toMatchObject({ evaluated: 1, would_have_auto_executed: 0, still_parked: 1 });   // the replay is attached whoever files
+    expect(mergeProposal(p.id, "owner")).toMatchObject({ merged: true, version: 2 });
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ status: "supervised", streak: 1 });
+  });
+  it("one pending proposal per Charter path: the reviewer cannot file a duplicate of what trust already filed", async () => {
+    await earnThree();
+    const r = TOOLS.propose_charter_diff.run({ summary: "s", evidence: "e", path: "roles.expeditor.authority.spend_usd", value: 500 }, { role: "reviewer", runId: "r" }) as any;
+    expect(r.error).toMatch(/already awaiting the owner/);
+    expect(proposals()).toHaveLength(1);
+  });
+  it("the mock reviewer explains a pending trust proposal instead of filing another", async () => {
+    await earnThree();
+    const r = await runReviewer();
+    expect(r.finalText).toMatch(/expedite_po:SUP_IRON/); expect(r.finalText).toMatch(/2 of 3/);
+    expect(proposals()).toHaveLength(1);
+    const stats = TOOLS.read_ledger_stats.run({}, { role: "reviewer", runId: "r" }) as any;
+    expect(stats.trust[0]).toMatchObject({ shape: "expedite_po:SUP_IRON", streak: 3, threshold: 3, status: "proposed" });
+    expect(stats.pending_proposals[0]).toMatchObject({ proposed_by: "trust", path: "roles.expeditor.authority.spend_usd", from: 250, to: 450, replay: { would_have_auto_executed: 2, total_usd: 900 } });
+  });
+});
+
+describe("trust api", () => {
+  it("state and /api/trust expose the shapes and parsed replays; a malformed replay is null, never a 500", async () => {
+    await earnThree();
+    const s = await (await get("/api/state")).json() as any;
+    expect(s.trust[0]).toMatchObject({ shape: "expedite_po:SUP_IRON", streak: 3, status: "proposed" });
+    expect(s.trust[0].evidence).toHaveLength(3);
+    expect(s.proposals[0].replay).toMatchObject({ would_have_auto_executed: 2 });
+    db().prepare("UPDATE charter_proposals SET replay='{not json'").run();
+    const s2 = await get("/api/state"); expect(s2.status).toBe(200);
+    expect((await s2.json() as any).proposals[0].replay).toBeNull();
+    const t = await (await get("/api/trust")).json() as any;
+    expect(t.shapes[0]).toMatchObject({ shape: "expedite_po:SUP_IRON", grant: null });
+    expect(t.shapes[0].evidence[0]).toMatchObject({ order_id: expect.any(String), approval_id: expect.any(String) });
   });
 });
