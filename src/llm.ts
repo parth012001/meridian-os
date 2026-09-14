@@ -48,18 +48,33 @@ function mockTurn(messages: ChatCompletionMessageParam[], role: string): LlmTurn
     const firstLatePo = ctx?.late_pos?.[0]?.id;
     if (firstLatePo && !called.includes("query_supplier_eta")) return call("query_supplier_eta", { po_id: firstLatePo });
     const proposals = messages.filter((m: any) => m.role === "tool" && m.name === "propose_action").map((m: any) => JSON.parse(m.content));
-    const tried = new Set(proposals.map(p => p.lever_type));
+    const tried = new Set(proposals.map(p => `${p.lever_type}:${p.po_id ?? ""}`));
+    const triedTypes = new Set(proposals.map(p => p.lever_type));
     const excluded = new Set<string>(/excluded levers?: ([^\n.]+)/i.exec(user)?.[1]?.split(/,\s*/) ?? []);
     const last = proposals[proposals.length - 1];
+    const lastToolName = called[called.length - 1];
     if (last && (last.status === "executed" || last.status === "awaiting_approval")) {
       if (last.status === "executed" && last.gap_closed === false) {
-        // partial ship executed but late openings remain: recommend the promise-date change
-        const next = alts.levers.find(l => l.closes_gap && !tried.has(l.type) && !excluded.has(l.type));
-        if (next) return call("propose_action", { order_id: orderId, lever_type: next.type, po_id: next.po_id, rationale: `Remaining openings still late after ${last.lever_type}; ${next.type} is the only lever that closes the gap.` });
+        // something still late: re-read the levers (the World changed), then take the next one that closes the gap
+        if (lastToolName === "propose_action") return call("find_alternatives", { order_id: orderId });
+        const next = alts.levers.find(l => l.closes_gap && !tried.has(`${l.type}:${l.po_id ?? ""}`) && !excluded.has(l.type));
+        if (next) return call("propose_action", { order_id: orderId, lever_type: next.type, po_id: next.po_id, rationale: `Remaining gap after ${last.lever_type}; ${next.type} on ${next.po_id ?? "order"} closes it.` });
+        return call("no_action_needed", { order_id: orderId, reason: "No remaining lever closes the gap." });
       }
       return done(last.status === "executed" ? `Recovered ${orderId} via ${last.lever_type} for $${last.cost_usd}.` : `Proposed ${last.lever_type} for ${orderId}; parked at gate under ${last.gate_rule}, waiting on owner.`);
     }
-    const pick = alts.levers.find(l => !tried.has(l.type) && !excluded.has(l.type) && (l.closes_gap || l.type === "partial_ship"));
+    if (last && last.error && lastToolName === "propose_action") {
+      // refused (does not close the gap, or rejected earlier): take the first closer not yet tried
+      const next = alts.levers.find(l => l.closes_gap && !tried.has(`${l.type}:${l.po_id ?? ""}`) && !excluded.has(l.type));
+      if (next) return call("propose_action", { order_id: orderId, lever_type: next.type, po_id: next.po_id, rationale: `Previous proposal refused; ${next.type} closes the gap.` });
+      return call("no_action_needed", { order_id: orderId, reason: "No lever closes the gap." });
+    }
+    if (lastToolName === "no_action_needed") {
+      const r = lastToolResult(messages, "no_action_needed");
+      if (r?.error) { const next = alts.levers.find(l => l.closes_gap && !tried.has(`${l.type}:${l.po_id ?? ""}`)); if (next) return call("propose_action", { order_id: orderId, lever_type: next.type, po_id: next.po_id, rationale: "Escalation refused; proposing the closing lever." }); }
+      return done(`Escalated ${orderId} to owner.`);
+    }
+    const pick = alts.levers.find(l => !tried.has(`${l.type}:${l.po_id ?? ""}`) && !excluded.has(l.type) && (l.closes_gap || (l.type === "partial_ship" && !triedTypes.has("partial_ship"))));
     if (!pick) return call("no_action_needed", { order_id: orderId, reason: "No lever closes the gap inside authority; escalating." });
     return call("propose_action", { order_id: orderId, lever_type: pick.type, po_id: pick.po_id,
       rationale: `${pick.type} is the cheapest lever that closes the gap ($${pick.cost_usd}${pick.touches?.length ? `, touches ${pick.touches.join("/")}` : ""}). ${pick.note}` });

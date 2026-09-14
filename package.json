@@ -9,6 +9,7 @@
   "scripts": {
     "seed": "tsx src/seed.ts",
     "reset-charter": "cp data/org.baseline.yaml org.yaml",
+    "trials": "tsx src/trials/run.ts",
     "demo": "tsx src/cli.ts",
     "dev": "tsx watch src/server.ts",
     "web": "vite --config web/vite.config.ts",

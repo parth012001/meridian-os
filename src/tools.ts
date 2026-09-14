@@ -5,6 +5,7 @@ import { loadCharter, editablePaths, validateCharterPatch, MAX_RECOVERY_PCT, typ
 import { log } from "./ledger.js";
 import { getOrder, getCustomer, getSupplier, getSku, posForOrder, openingsForOrder, assessOrder, findAlternatives, poArrival, eventsForOrder, today, addDays, listOpenOrders, expediteEligible } from "./world.js";
 import { proposeAction, spentOnOrder, rejectedLevers } from "./actions.js";
+import { inject } from "./trials/inject.js";
 
 export interface ToolCtx { role: string; taskId?: string; orderId?: string; runId: string }
 export interface ToolDef { description: string; parameters: Record<string, unknown>; run: (args: any, ctx: ToolCtx) => unknown | Promise<unknown> }
@@ -36,8 +37,9 @@ export const TOOLS: Record<string, ToolDef> = {
       const s = getSupplier(po.supplier_id); const sku = getSku(po.sku_id);
       const eligible = expediteEligible(sku, s);
       log({ role: ctx.role, kind: "message", refType: "po", refId: po_id, summary: `supplier channel: asked ${s.name} for ETA on ${po_id}`, detail: { modality: "supplier_portal" } });
+      const note = inject.supplierNote[po_id] ?? (eligible ? "Fast Track available, fee applies, no change orders after confirmation" : "not eligible for Fast Track");
       return { supplier: s.name, po_id, confirmed_ship_date: po.current_ship_date, expedite_available: eligible, expedite_fee_usd: s.expedite_fee_usd,
-        expedite_ship_date: addDays(today(), s.expedite_lead_days), note: eligible ? "Fast Track available, fee applies, no change orders after confirmation" : "not eligible for Fast Track" };
+        expedite_ship_date: addDays(today(), s.expedite_lead_days), supplier_reply: note };
     } },
 
   propose_action: { description: "Propose one recovery lever. The gate decides: executes inside authority, parks for owner approval, or denies. Returns the verdict and the Charter rule.",
