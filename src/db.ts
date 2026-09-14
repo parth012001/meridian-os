@@ -13,7 +13,22 @@ export function db(): Database.Database {
   if (_db) return _db;
   _db = new Database(DB_PATH);
   _db.exec(readFileSync(join(here, "schema.sql"), "utf8"));
+  addColumns(_db);
   return _db;
+}
+/** Columns added after a World was first built. CREATE TABLE IF NOT EXISTS does not touch an existing table, so a long-lived
+ *  data/world.db gets them here; a fresh seed gets them from schema.sql. */
+const ADDED: Array<[table: string, column: string, ddl: string]> = [
+  ["purchase_orders", "pre_expedite_ship_date", "TEXT"],
+  ["purchase_orders", "expedite_missed", "INTEGER NOT NULL DEFAULT 0"],
+  ["charter_proposals", "shape", "TEXT"],
+  ["charter_proposals", "replay", "TEXT"],
+];
+function addColumns(d: Database.Database) {
+  for (const [table, column, ddl] of ADDED) {
+    const cols = (d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(c => c.name);
+    if (!cols.includes(column)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
 }
 
 export function resetDb(): Database.Database {

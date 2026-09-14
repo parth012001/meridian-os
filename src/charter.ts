@@ -40,8 +40,14 @@ export const Charter = z.object({
   autonomy_levels: z.partialRecord(ActionType, z.enum(["act", "act_within_limit", "act_if_ship_policy_allows", "recommend", "observe"])),
   roles: z.record(z.string(), Role),
   escalation: z.object({ default: z.string(), approval_timeout_hours: z.number() }),
+  // Earned autonomy. A missing block or a missing threshold means a shape is supervised forever (fail closed).
+  trust: z.object({
+    thresholds: z.partialRecord(ActionType, z.number().int().min(1)).default({}),
+    demote_on: z.array(z.string()).default(["expedite_failed"]),
+  }).prefault({}),
 });
 export type Charter = z.infer<typeof Charter>;
+export const AUTONOMY_RANK: Record<string, number> = { observe: 0, recommend: 1, act_if_ship_policy_allows: 2, act_within_limit: 2, act: 3 };
 export type RoleDef = z.infer<typeof Role>;
 
 export const MAX_RECOVERY_PCT = 0.02; // C4
@@ -83,6 +89,10 @@ function patchedDoc(patch: Record<string, unknown>) {
 export function validateCharterPatch(patch: Record<string, unknown>): { ok: true } | { ok: false; error: string } {
   const r = Charter.safeParse(patchedDoc(patch).toJS());
   return r.success ? { ok: true } : { ok: false, error: r.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") };
+}
+/** The Charter as it would read after the patch, without touching disk. The replay runs the gate against this. */
+export function previewCharterPatch(patch: Record<string, unknown>): Charter | null {
+  try { const r = Charter.safeParse(patchedDoc(patch).toJS()); return r.success ? r.data : null; } catch { return null; }
 }
 export function applyCharterPatch(patch: Record<string, unknown>): Charter {
   const doc = patchedDoc(patch);

@@ -4,6 +4,7 @@ import { loadCharter, type ActionType } from "./charter.js";
 import { gate } from "./gate.js";
 import { log } from "./ledger.js";
 import { assessOrder, findAlternatives, applyLever, getOrder, getSku, eventsForOrder, type Lever } from "./world.js";
+import { recordOutcome } from "./trust.js";
 
 export const spentOnOrder = (orderId: string) =>
   (db().prepare("SELECT COALESCE(SUM(cost_usd),0) v FROM actions WHERE order_id=? AND status='executed'").get(orderId) as any).v as number;
@@ -96,6 +97,7 @@ export function decideApproval(approvalId: string, decision: "approved" | "rejec
   db().prepare("UPDATE approvals SET status=?, decided_by=?, decided_at=?, note=? WHERE id=?").run(decision, by, nowIso(), note ?? null, approvalId);
   const a = db().prepare("SELECT * FROM actions WHERE id=?").get(ap.action_id) as any;
   log({ role: by, kind: decision === "approved" ? "approve" : "reject", refType: "approval", refId: approvalId, summary: `${by} ${decision} ${ap.kind} on ${a.order_id}${note ? `: "${note}"` : ""}` });
+  recordOutcome({ action: a, outcome: decision, approvalId, by });   // the owner's decision is the evidence trust is built from; never throws
   if (decision === "approved") {
     db().prepare("UPDATE actions SET status='approved' WHERE id=?").run(a.id);
     return { action: a, executed: ap.kind === "substitution" ? null : executeAction(a.id, "system", by) };
