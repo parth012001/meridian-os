@@ -46,6 +46,7 @@ export interface Proposal {
   id: string; proposed_by: string; summary: string; evidence: string; patch: string; status: string; decided_by: string | null; created_at: string;
   shape?: string | null; replay?: Replay | null;
 }
+export interface Run { id: string; role: string; task_id: string | null; status: string; turns: number; tokens_in: number; tokens_out: number; started_at: string; ended_at: string | null; error: string | null }
 export interface LedgerRow {
   id: number; ts: string; role: string; on_behalf_of: string | null; kind: string; ref_type: string | null; ref_id: string | null;
   summary: string; detail: string | null; charter_rule: string | null;
@@ -58,7 +59,7 @@ export interface TrustRow {
 }
 export interface State {
   mode: string; busy: boolean; charter: Charter; kpis: Kpis; board: BoardRow[]; approvals: Approval[]; messages: Message[];
-  proposals: Proposal[]; runs: unknown[]; ledger: LedgerRow[]; trust?: TrustRow[];
+  proposals: Proposal[]; runs: Run[]; ledger: LedgerRow[]; trust?: TrustRow[];
 }
 export interface Lever {
   type: string; po_id?: string; params: Record<string, unknown>; cost_usd: number; new_arrival?: string; days_saved: number;
