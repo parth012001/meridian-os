@@ -81,3 +81,14 @@ CREATE TABLE IF NOT EXISTS runs (
   turns INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
   started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), ended_at TEXT, error TEXT
 );
+CREATE TABLE IF NOT EXISTS reservations (
+  id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), sku_id TEXT NOT NULL REFERENCES skus(id), branch TEXT NOT NULL,
+  qty INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'held', created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS trials (
+  id TEXT PRIMARY KEY, scenario TEXT NOT NULL, rep INTEGER NOT NULL, mode TEXT NOT NULL,
+  passed INTEGER NOT NULL, checks TEXT NOT NULL, summary TEXT NOT NULL,
+  tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, runs INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL, started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS trials_started_at ON trials(started_at);

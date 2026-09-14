@@ -21,6 +21,26 @@ export const getSku = (id: string) => db().prepare("SELECT * FROM skus WHERE id=
 export const posForOrder = (orderId: string) => db().prepare("SELECT * FROM purchase_orders WHERE order_id=? AND status='open'").all(orderId) as PO[];
 export const openingsForOrder = (orderId: string) => db().prepare("SELECT * FROM openings WHERE order_id=? ORDER BY opening_no").all(orderId) as any[];
 export const inventoryFor = (skuId: string) => db().prepare("SELECT * FROM inventory WHERE sku_id=?").all(skuId) as { sku_id: string; branch: string; qty_on_hand: number; qty_allocated: number }[];
+export const available = (skuId: string, branch: string) => {
+  const r = db().prepare("SELECT qty_on_hand - qty_allocated AS a FROM inventory WHERE sku_id=? AND branch=?").get(skuId, branch) as { a: number } | undefined;
+  return r?.a ?? 0;
+};
+/** Units already held for this order at a branch. A promise to a customer is backed by a reservation, not by a hope that stock is still there at consent time. */
+export const heldFor = (orderId: string, skuId: string, branch: string) =>
+  (db().prepare("SELECT COALESCE(SUM(qty),0) q FROM reservations WHERE order_id=? AND sku_id=? AND branch=? AND status='held'").get(orderId, skuId, branch) as any).q as number;
+/** Hold stock for an order before the customer is asked. Fails (and holds nothing) when the branch cannot cover the quantity. */
+export function reserveStock(orderId: string, skuId: string, branch: string, qty: number): boolean {
+  if (available(skuId, branch) < qty) return false;
+  db().prepare("INSERT INTO reservations (id, order_id, sku_id, branch, qty) VALUES (?,?,?,?,?)").run(uid("rsv"), orderId, skuId, branch, qty);
+  db().prepare("UPDATE inventory SET qty_allocated = qty_allocated + ? WHERE sku_id=? AND branch=?").run(qty, skuId, branch);
+  recordEvent("stock_reserved", { sku_id: skuId, branch, qty }, orderId);
+  return true;
+}
+
+/** Simulated supplier channel override, keyed by PO. Set only by the trials driver, empty in normal operation, cleared after every scenario and on reset. */
+export const supplierReplyOverride: Record<string, string> = {};
+export const clearSupplierReplyOverrides = () => { for (const k of Object.keys(supplierReplyOverride)) delete supplierReplyOverride[k]; };
+
 /** Simulated supplier policy: Oakridge will not Fast Track fire-rated wood doors. One rule, used by the lever enumerator and the supplier channel alike. */
 export const expediteEligible = (sku: Sku, sup: Supplier) => !sku.fire_rating || sup.id !== "SUP_OAK";
 
@@ -99,7 +119,7 @@ export function findAlternatives(orderId: string): Lever[] {
       for (const c of cands) {
         if ((c.fire_rating ?? null) !== (sku.fire_rating ?? null)) continue; // C3: never across ratings
         for (const inv of inventoryFor(c.id)) {
-          if (inv.qty_on_hand - inv.qty_allocated >= po.qty) {
+          if (inv.qty_on_hand - inv.qty_allocated + heldFor(order.id, c.id, inv.branch) >= po.qty) {   // our own hold still counts as available to us
             const arrival = inv.branch === order.branch ? t : addDays(t, 2);
             const delta = Math.max(0, (c.unit_cost - sku.unit_cost) * po.qty);
             out.push({ type: "substitute_sku", po_id: po.id, params: { from_sku: sku.id, to_sku: c.id, qty: po.qty, branch: inv.branch },
@@ -147,7 +167,9 @@ export function applyLever(lever: Lever, orderId: string) {
     }
     case "substitute_sku": {
       const p = lever.params as any;
-      d.prepare("UPDATE inventory SET qty_allocated = qty_allocated + ? WHERE sku_id=? AND branch=?").run(p.qty, p.to_sku, p.branch);
+      const held = heldFor(orderId, p.to_sku, p.branch);   // consume the hold made at approval; allocate only what was not already held
+      d.prepare("UPDATE reservations SET status='consumed' WHERE order_id=? AND sku_id=? AND branch=? AND status='held'").run(orderId, p.to_sku, p.branch);
+      d.prepare("UPDATE inventory SET qty_allocated = qty_allocated + ? WHERE sku_id=? AND branch=?").run(p.qty - held, p.to_sku, p.branch);
       d.prepare("UPDATE purchase_orders SET status='cancelled_substituted' WHERE id=?").run(lever.po_id);
       d.prepare("UPDATE openings SET frame_sku = CASE WHEN frame_sku=? THEN ? ELSE frame_sku END, door_sku = CASE WHEN door_sku=? THEN ? ELSE door_sku END WHERE order_id=?").run(p.from_sku, p.to_sku, p.from_sku, p.to_sku, orderId);
       recordEvent("sku_substituted", p, orderId); break;

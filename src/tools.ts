@@ -3,8 +3,8 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { db, uid, nowIso } from "./db.js";
 import { loadCharter, editablePaths, validateCharterPatch, MAX_RECOVERY_PCT, type ActionType } from "./charter.js";
 import { log } from "./ledger.js";
-import { getOrder, getCustomer, getSupplier, getSku, posForOrder, openingsForOrder, assessOrder, findAlternatives, poArrival, eventsForOrder, today, addDays, listOpenOrders, expediteEligible } from "./world.js";
-import { proposeAction, spentOnOrder, rejectedLevers } from "./actions.js";
+import { getOrder, getCustomer, getSupplier, getSku, posForOrder, openingsForOrder, assessOrder, findAlternatives, poArrival, eventsForOrder, today, addDays, listOpenOrders, expediteEligible, supplierReplyOverride } from "./world.js";
+import { proposeAction, spentOnOrder, closedLevers } from "./actions.js";
 
 export interface ToolCtx { role: string; taskId?: string; orderId?: string; runId: string }
 export interface ToolDef { description: string; parameters: Record<string, unknown>; run: (args: any, ctx: ToolCtx) => unknown | Promise<unknown> }
@@ -36,21 +36,24 @@ export const TOOLS: Record<string, ToolDef> = {
       const s = getSupplier(po.supplier_id); const sku = getSku(po.sku_id);
       const eligible = expediteEligible(sku, s);
       log({ role: ctx.role, kind: "message", refType: "po", refId: po_id, summary: `supplier channel: asked ${s.name} for ETA on ${po_id}`, detail: { modality: "supplier_portal" } });
+      const note = supplierReplyOverride[po_id] ?? (eligible ? "Fast Track available, fee applies, no change orders after confirmation" : "not eligible for Fast Track");
       return { supplier: s.name, po_id, confirmed_ship_date: po.current_ship_date, expedite_available: eligible, expedite_fee_usd: s.expedite_fee_usd,
-        expedite_ship_date: addDays(today(), s.expedite_lead_days), note: eligible ? "Fast Track available, fee applies, no change orders after confirmation" : "not eligible for Fast Track" };
+        expedite_ship_date: addDays(today(), s.expedite_lead_days), supplier_reply: note };
     } },
 
   propose_action: { description: "Propose one recovery lever. The gate decides: executes inside authority, parks for owner approval, or denies. Returns the verdict and the Charter rule.",
     parameters: { type: "object", properties: { order_id: { type: "string" }, lever_type: { type: "string", enum: ["transfer_stock", "expedite_po", "partial_ship", "substitute_sku", "change_promise_date"] }, po_id: { type: "string" }, rationale: { type: "string" } }, required: ["order_id", "lever_type", "rationale"], additionalProperties: false },
     run: ({ order_id, lever_type, po_id, rationale }, ctx) => {
       if (!ctx.taskId) return { error: "no task in context" };
+      if (ctx.orderId && order_id !== ctx.orderId) return { error: `this task is for ${ctx.orderId}; you may not act on ${order_id}` };   // tool results cannot redirect a task
       return proposeAction(ctx.role, ctx.taskId, order_id, lever_type as ActionType, po_id, rationale);
     } },
 
   no_action_needed: { description: "Escalate to the owner because NO lever closes the gap. Do not use when a lever closes the gap but needs approval or consent; propose that lever instead and the gate will route it.", parameters: { type: "object", properties: { order_id: { type: "string" }, reason: { type: "string" } }, required: ["order_id", "reason"], additionalProperties: false },
     run: ({ order_id, reason }, ctx) => {
-      const rejected = ctx.taskId ? rejectedLevers(ctx.taskId) : new Set<string>();
-      const closers = findAlternatives(order_id).filter(l => l.closes_gap && !rejected.has(l.type));
+      if (ctx.orderId && order_id !== ctx.orderId) return { error: `this task is for ${ctx.orderId}; you may not escalate ${order_id}` };
+      const closed = ctx.taskId ? closedLevers(ctx.taskId) : new Set<string>();
+      const closers = findAlternatives(order_id).filter(l => l.closes_gap && !closed.has(l.type));
       if (closers.length) return { error: `refused: ${closers.map(l => `${l.type} ($${l.cost_usd}, requires ${l.requires})`).join("; ")} would close the gap. Propose one of them; approval or consent is the gate's job, not a reason to stop.` };
       if (ctx.taskId) db().prepare("UPDATE tasks SET status='escalated' WHERE id=?").run(ctx.taskId);
       log({ role: ctx.role, kind: "outcome", refType: "task", refId: ctx.taskId, summary: `escalated ${order_id} to owner: ${reason}` });
@@ -60,6 +63,7 @@ export const TOOLS: Record<string, ToolDef> = {
   draft_customer_message: { description: "Draft a message to the customer. kind=status_update sends immediately; substitution_request and delay_notice require owner review (C5).",
     parameters: { type: "object", properties: { order_id: { type: "string" }, kind: { type: "string", enum: ["status_update", "substitution_request", "delay_notice"] }, subject: { type: "string" }, body: { type: "string" } }, required: ["order_id", "kind", "subject", "body"], additionalProperties: false },
     run: ({ order_id, kind, subject, body }, ctx) => {
+      if (ctx.orderId && order_id !== ctx.orderId) return { error: `this run is for ${ctx.orderId}; you may not write to the customer of ${order_id}` };
       const o = getOrder(order_id); if (!o) return { error: "unknown order" };
       const c = getCustomer(o.customer_id); const role = loadCharter().roles[ctx.role];
       const id = uid("msg");

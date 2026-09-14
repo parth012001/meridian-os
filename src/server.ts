@@ -7,10 +7,12 @@ import { existsSync } from "node:fs";
 import { db } from "./db.js";
 import { seed } from "./seed.js";
 import { loadCharter, rawCharterText, applyCharterPatch, restoreBaselineCharter } from "./charter.js";
-import { assessAll, applySupplierSlip, kpis, findAlternatives } from "./world.js";
+import { assessAll, applySupplierSlip, kpis, findAlternatives, clearSupplierReplyOverrides } from "./world.js";
 import { runWatcher, workOpenTasks, ownerDecides, customerConsents, runReviewer, runExpeditor } from "./roles.js";
 import { recentLedger, log } from "./ledger.js";
-import { MOCK, MODEL } from "./llm.js";
+import { MOCK, MODEL, MODE } from "./llm.js";
+import { runTrials, scorecard } from "./trials/run.js";
+import { scenarios } from "./trials/scenarios.js";
 
 export const app = new Hono();
 const role = (c: any) => (c.req.header("x-role") ?? "viewer") as string;
@@ -28,7 +30,7 @@ app.get("/api/state", c => {
   for (const t of db().prepare("SELECT * FROM tasks ORDER BY created_at DESC").all() as any[]) tasksByOrder[t.order_id] ??= t;
   const sinceId = Number(c.req.query("since") ?? 0);
   return c.json({
-    mode: MOCK ? "mock" : `live:${MODEL}`, busy, charter: loadCharter(), kpis: kpis(),
+    mode: MODE, busy, charter: loadCharter(), kpis: kpis(),
     board: assessAll().map(r => ({ ...r.order, days_late: r.daysLate, score: r.score, reasons: r.reasons, task: tasksByOrder[r.order.id] ?? null })),
     approvals: db().prepare("SELECT ap.*, a.type action_type, a.order_id, a.cost_usd, a.rationale, a.gate_rule FROM approvals ap JOIN actions a ON a.id=ap.action_id ORDER BY ap.created_at DESC").all(),
     messages: db().prepare("SELECT * FROM messages ORDER BY created_at DESC LIMIT 30").all(),
@@ -44,7 +46,7 @@ app.get("/api/ledger", c => c.json(recentLedger(Number(c.req.query("limit") ?? 5
 // Scenario controls stand in for the outside world (reset, supplier feed, customer inbox). Owner-only, and never while an agent is mid-run.
 app.post("/api/reset", c => {
   const denied = ownerOnly(c); if (denied) return denied;
-  return guard(c, async () => { seed(); restoreBaselineCharter(); log({ role: role(c), kind: "observe", summary: "world reset by " + role(c) }); return { ok: true }; });
+  return guard(c, async () => { seed(); restoreBaselineCharter(); clearSupplierReplyOverrides(); log({ role: role(c), kind: "observe", summary: "world reset by " + role(c) }); return { ok: true }; });
 });
 app.post("/api/events/slip", async c => {
   const denied = ownerOnly(c); if (denied) return denied;
@@ -72,6 +74,7 @@ app.post("/api/customer/consent", async c => {
 app.post("/api/review", c => guard(c, () => runReviewer()));
 app.post("/api/proposals/:id", async c => {
   const denied = ownerOnly(c); if (denied) return denied;
+  if (busy) return c.json({ error: "an agent run is already in progress" }, 409);   // never change the Charter under a running desk or trial
   const b = await c.req.json().catch(() => ({}));
   const p = db().prepare("SELECT * FROM charter_proposals WHERE id=?").get(c.req.param("id")) as any;
   if (!p || p.status !== "proposed") return c.json({ error: "not a pending proposal" }, 400);
@@ -86,6 +89,21 @@ app.post("/api/proposals/:id", async c => {
   db().prepare("UPDATE charter_proposals SET status='rejected', decided_by='owner', decided_at=datetime('now') WHERE id=?").run(p.id);
   log({ role: "owner", kind: "reject", refType: "charter_proposal", refId: p.id, summary: `rejected charter proposal: ${p.summary}` });
   return c.json({ merged: false });
+});
+
+app.get("/api/trials", c => c.json({ scenarios: scenarios.map(s => ({ id: s.id, title: s.title, why: s.why, checks: s.checks.length })), scorecard: scorecard(),
+  recent: db().prepare("SELECT id, scenario, rep, mode, passed, checks, summary, tokens_in, tokens_out, runs, duration_ms, started_at FROM trials ORDER BY started_at DESC LIMIT 8").all().map((r: any) => ({ ...r, checks: JSON.parse(r.checks) })) }));
+const MAX_TRIAL_REPS = 5;   // a batch holds `busy` for its whole duration (minutes per rep in live mode)
+app.post("/api/trials/run", async c => {
+  const denied = ownerOnly(c); if (denied) return denied;
+  const b = await c.req.json().catch(() => ({}));
+  const n = b.n ?? 1;
+  if (!Number.isInteger(n) || n < 1 || n > MAX_TRIAL_REPS) return c.json({ error: `n must be an integer from 1 to ${MAX_TRIAL_REPS}` }, 400);
+  if (b.only !== undefined && !scenarios.some(s => s.id === b.only)) return c.json({ error: `unknown scenario; one of ${scenarios.map(s => s.id).join(", ")}` }, 400);
+  return guard(c, async () => {
+    try { const rows = await runTrials({ n, only: b.only ? [b.only] : [] }); return rows.map(r => ({ id: r.id, scenario: r.scenario, passed: r.passed, summary: r.summary })); }
+    finally { restoreBaselineCharter(); clearSupplierReplyOverrides(); }   // the demo World is whatever the last scenario left; the Charter and channels are clean
+  });
 });
 
 if (existsSync("web/dist")) { app.use("/*", serveStatic({ root: "./web/dist" })); app.get("*", serveStatic({ path: "./web/dist/index.html" })); }

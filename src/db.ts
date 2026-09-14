@@ -19,7 +19,7 @@ export function db(): Database.Database {
 export function resetDb(): Database.Database {
   if (_db) { _db.close(); _db = null; }
   const d = new Database(DB_PATH);
-  const tables = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
+  const tables = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'trials'").all() as { name: string }[];
   d.pragma("foreign_keys = OFF");
   for (const t of tables) d.exec(`DROP TABLE IF EXISTS ${t.name}`);
   d.close();

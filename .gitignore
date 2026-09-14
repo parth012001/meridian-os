@@ -5,3 +5,4 @@ data/*.db
 data/*.db-*
 .env
 .gstack/
+# internal working notes live outside the repo in ../notes

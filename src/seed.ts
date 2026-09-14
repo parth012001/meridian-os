@@ -3,10 +3,8 @@ import { resetDb, db } from "./db.js";
 import { today, addDays } from "./world.js";
 import { log } from "./ledger.js";
 
-const t = today();
-const d = (n: number) => addDays(t, n);
-
 export function seed() {
+  const t = today(); const d = (n: number) => addDays(t, n);   // computed per seed, so a long-running server does not drift from today()
   const D = resetDb();
   const run = (sql: string, rows: unknown[][]) => { const s = D.prepare(sql); for (const r of rows) s.run(...r); };
 

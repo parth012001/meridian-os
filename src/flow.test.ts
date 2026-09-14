@@ -88,7 +88,8 @@ describe("approvals", () => {
     expect(rejectedLevers(t.id).has("expedite_po")).toBe(true);
     // the re-run picked a different lever; the rejected one was not re-filed
     const kinds = pending().filter(a => a.order_id === "ORD-1042").map(a => a.action_type);
-    expect(kinds).not.toContain("expedite_po"); expect(kinds.length).toBe(1);
+    expect(kinds).toEqual(["change_promise_date"]);   // the only closer left once the date-keeping lever was rejected, parked under C1
+    expect(one("SELECT gate_rule FROM actions WHERE order_id='ORD-1042' AND type='change_promise_date'").gate_rule).toBe("C1");
     const r = proposeAction("expeditor", t.id, "ORD-1042", "expedite_po", undefined, "try again") as any;
     expect(r.error).toMatch(/already rejected/);
     expect(q("SELECT * FROM actions WHERE task_id=? AND type='expedite_po'", t.id).length).toBe(1);
@@ -172,6 +173,13 @@ describe("api", () => {
     expect((await work).status).toBe(200);
     expect((await post("/api/watch", {}, "owner")).status).toBe(200);
   });
+  it("trials endpoint is owner-only and fails closed on bad input", async () => {
+    db().exec("DELETE FROM trials");
+    expect((await post("/api/trials/run", { n: 1 })).status).toBe(403);
+    expect((await post("/api/trials/run", { n: 1 }, "viewer")).status).toBe(403);
+    for (const body of [{ n: 0 }, { n: -3 }, { n: 99 }, { n: "Infinity" }, { n: 1.5 }, { only: "does_not_exist" }]) expect((await post("/api/trials/run", body, "owner")).status, JSON.stringify(body)).toBe(400);
+    expect(q("SELECT 1 FROM trials").length).toBe(0);
+  });
   it("working a parked task is a 409, not a 500", async () => {
     slipFrames(); runWatcher(); await workOpenTasks();
     const parked = taskFor("ORD-1042"); expect(parked.status).toBe("awaiting_approval");
@@ -186,5 +194,15 @@ describe("api", () => {
     expect(res.status).toBe(400);
     expect(one("SELECT status FROM charter_proposals WHERE id=?", r.proposal_id).status).toBe("proposed");
     expect(loadCharter().version).toBe(1);
+  });
+});
+
+describe("procedures", () => {
+  it("refuses a promise-date change while a lever that keeps the date exists", () => {
+    slipFrames(); runWatcher();
+    const t = taskFor("ORD-1042");
+    const r = proposeAction("expeditor", t.id, "ORD-1042", "change_promise_date", undefined, "supplier said so") as any;
+    expect(r.error).toMatch(/last resort/);
+    expect(q("SELECT 1 FROM actions WHERE order_id='ORD-1042'").length).toBe(0);
   });
 });
