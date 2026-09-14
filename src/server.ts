@@ -13,7 +13,7 @@ import { runWatcher, workOpenTasks, ownerDecides, customerConsents, runReviewer,
 import { recentLedger, log } from "./ledger.js";
 import { MOCK, MODEL, MODE } from "./llm.js";
 import { runTrials, scorecard } from "./trials/run.js";
-import { scenarios } from "./trials/scenarios.js";
+import { scenarios, seedExpediteOrders } from "./trials/scenarios.js";
 
 export const app = new Hono();
 const role = (c: any) => (c.req.header("x-role") ?? "viewer") as string;
@@ -28,13 +28,13 @@ if ((db().prepare("SELECT COUNT(*) c FROM orders").get() as any).c === 0) seed()
 
 app.get("/api/state", c => {
   const tasksByOrder: Record<string, any> = {};
-  for (const t of db().prepare("SELECT * FROM tasks ORDER BY created_at DESC").all() as any[]) tasksByOrder[t.order_id] ??= t;
+  for (const t of db().prepare("SELECT * FROM tasks ORDER BY created_at DESC, rowid DESC").all() as any[]) tasksByOrder[t.order_id] ??= t;   // rowid breaks same-second ties (a reopened task)
   const sinceId = Number(c.req.query("since") ?? 0);
   return c.json({
     mode: MODE, busy, charter: loadCharter(), kpis: kpis(),
     board: assessAll().map(r => ({ ...r.order, days_late: r.daysLate, score: r.score, reasons: r.reasons, task: tasksByOrder[r.order.id] ?? null })),
     approvals: db().prepare("SELECT ap.*, a.type action_type, a.order_id, a.cost_usd, a.rationale, a.gate_rule FROM approvals ap JOIN actions a ON a.id=ap.action_id ORDER BY ap.created_at DESC").all(),
-    messages: db().prepare("SELECT * FROM messages ORDER BY created_at DESC LIMIT 30").all(),
+    messages: db().prepare("SELECT * FROM messages ORDER BY created_at DESC, rowid DESC LIMIT 30").all(),
     proposals: (db().prepare("SELECT * FROM charter_proposals ORDER BY created_at DESC, rowid DESC").all() as any[]).map(p => ({ ...p, replay: parseReplay(p.replay) })),
     trust: trustView(),
     runs: db().prepare("SELECT * FROM runs ORDER BY started_at DESC LIMIT 20").all(),
@@ -47,9 +47,18 @@ app.get("/api/orders/:id/levers", c => c.json(findAlternatives(c.req.param("id")
 app.get("/api/ledger", c => c.json(recentLedger(Number(c.req.query("limit") ?? 500))));
 
 // Scenario controls stand in for the outside world (reset, supplier feed, customer inbox). Owner-only, and never while an agent is mid-run.
-app.post("/api/reset", c => {
+/** Named starting Worlds. `baseline` is the seed; `earned_autonomy` adds the three Ironline masonry-frame orders the trial uses, so the
+ *  owner can click through the whole arc (three approvals -> trust proposal -> merge -> autonomous expedite -> miss -> demotion). */
+const WORLDS: Record<string, { note: string; extra: () => void }> = {
+  baseline: { note: "", extra: () => {} },
+  earned_autonomy: { note: " (earned_autonomy world: +3 Ironline masonry-frame orders ORD-3001..3003, $25k each)", extra: () => { seedExpediteOrders(2); seedExpediteOrders(1, { from: 3, promise: 30 }); } },
+};
+app.post("/api/reset", async c => {
   const denied = ownerOnly(c); if (denied) return denied;
-  return guard(c, async () => { seed(); restoreBaselineCharter(); clearSupplierReplyOverrides(); log({ role: role(c), kind: "observe", summary: "world reset by " + role(c) }); return { ok: true }; });
+  const b = await c.req.json().catch(() => ({}));
+  const world = WORLDS[b.world ?? "baseline"];
+  if (!world) return c.json({ error: `unknown world; one of ${Object.keys(WORLDS).join(", ")}` }, 400);   // fail closed: never seed something unnamed
+  return guard(c, async () => { seed(); world.extra(); restoreBaselineCharter(); clearSupplierReplyOverrides(); log({ role: role(c), kind: "observe", summary: `world reset by ${role(c)}${world.note}` }); return { ok: true, world: b.world ?? "baseline" }; });
 });
 app.post("/api/events/slip", async c => {
   const denied = ownerOnly(c); if (denied) return denied;

@@ -28,7 +28,7 @@ import { app } from "./server.js";
 const q = <T = any>(sql: string, ...args: unknown[]) => db().prepare(sql).all(...args) as T[];
 const one = <T = any>(sql: string, ...args: unknown[]) => db().prepare(sql).get(...args) as T;
 const pending = () => q("SELECT ap.*, a.type action_type, a.order_id FROM approvals ap JOIN actions a ON a.id=ap.action_id WHERE ap.status='pending'");
-const taskFor = (orderId: string) => one("SELECT * FROM tasks WHERE order_id=? ORDER BY created_at DESC LIMIT 1", orderId);
+const taskFor = (orderId: string) => one("SELECT * FROM tasks WHERE order_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1", orderId);
 const slipFrames = () => applySupplierSlip("SUP_IRON", "frame", 10, "test");
 const post = (path: string, body: unknown = {}, role?: string) =>
   app.request(path, { method: "POST", headers: { "content-type": "application/json", ...(role ? { "x-role": role } : {}) }, body: JSON.stringify(body) });

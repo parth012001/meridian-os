@@ -330,3 +330,64 @@ describe("demotion", () => {
     expect((await post("/api/events/expedite-miss", { po_id: po }, "owner")).status).toBe(400);
   });
 });
+
+describe("the arc through the API, as the dock drives it", () => {
+  const state = async () => (await get("/api/state")).json() as Promise<any>;
+  const approveAllPending = async () => { for (const a of (await state()).approvals.filter((x: any) => x.status === "pending")) expect((await post(`/api/approvals/${a.id}`, { decision: "approved" }, "owner")).status).toBe(200); };
+  it("reset accepts a named world, owner-only, and fails closed on an unknown one", async () => {
+    expect((await post("/api/reset", { world: "earned_autonomy" }, "viewer")).status).toBe(403);
+    const bad = await post("/api/reset", { world: "nope" }, "owner");
+    expect(bad.status).toBe(400); expect(((await bad.json()) as any).error).toMatch(/unknown world/);
+    expect((await state()).board.some((o: any) => o.id === "ORD-3001")).toBe(false);
+    expect((await post("/api/reset", { world: "earned_autonomy" }, "owner")).status).toBe(200);
+    const s = await state();
+    expect(s.board.filter((o: any) => o.id.startsWith("ORD-300")).map((o: any) => o.id).sort()).toEqual(["ORD-3001", "ORD-3002", "ORD-3003"]);
+    expect(s.charter.version).toBe(1); expect(s.trust).toEqual([]);
+    expect(s.board.filter((o: any) => o.id.startsWith("ORD-300")).every((o: any) => o.days_late === 0)).toBe(true);   // ORD-1035 is amber in the seed by design
+    expect(q("SELECT 1 FROM ledger WHERE summary LIKE 'world reset by owner%earned_autonomy%'").length).toBe(1);
+    expect((await post("/api/reset", {}, "owner")).status).toBe(200);   // default stays the baseline world
+    expect((await state()).board.some((o: any) => o.id === "ORD-3001")).toBe(false);
+    expect((await post("/api/reset", { world: "baseline" }, "owner")).status).toBe(200);
+  });
+  it("earn, merge, act alone, fail, demoted: every step is an existing endpoint", async () => {
+    expect((await post("/api/reset", { world: "earned_autonomy" }, "owner")).status).toBe(200);
+    expect((await post("/api/events/slip", { supplier_id: "SUP_IRON", category: "frame", days: 10 }, "owner")).status).toBe(200);
+    expect((await post("/api/watch", {}, "owner")).status).toBe(200);
+    expect((await post("/api/work", {}, "owner")).status).toBe(200);
+    let s = await state();
+    expect(s.approvals.filter((a: any) => a.status === "pending" && a.action_type === "expedite_po").map((a: any) => a.order_id).sort()).toEqual(["ORD-1042", "ORD-3001", "ORD-3002"]);
+    await approveAllPending();
+    expect((await post("/api/customer/consent", { order_id: "ORD-1043" }, "owner")).status).toBe(200);   // dock step 5
+    s = await state();
+    expect(s.trust.find((t: any) => t.shape === "expedite_po:SUP_IRON")).toMatchObject({ streak: 3, threshold: 3, status: "proposed" });
+    const prop = s.proposals.find((p: any) => p.proposed_by === "trust" && p.status === "proposed");
+    expect(prop.replay).toMatchObject({ would_have_auto_executed: 2, total_usd: 900 });
+    expect((await post("/api/review", {}, "owner")).status).toBe(200);
+    expect((await state()).proposals.filter((p: any) => p.status === "proposed")).toHaveLength(1);   // the reviewer explained, did not duplicate
+    expect(await (await post(`/api/proposals/${prop.id}`, { decision: "merge" }, "owner")).json()).toMatchObject({ merged: true, version: 2, shape: "expedite_po:SUP_IRON" });
+    expect((await state()).trust.find((t: any) => t.shape === "expedite_po:SUP_IRON").status).toBe("autonomous");
+    // the world moves again: only ORD-3003's PO is still open and unexpedited
+    expect((await post("/api/events/slip", { supplier_id: "SUP_IRON", category: "frame", days: 15, note: "Ironline slips again" }, "owner")).status).toBe(200);
+    s = await state(); expect(s.board.filter((o: any) => o.days_late > 0).map((o: any) => o.id)).toEqual(["ORD-3003"]);
+    expect((await post("/api/watch", {}, "owner")).status).toBe(200);
+    expect((await post("/api/work", {}, "owner")).status).toBe(200);
+    s = await state();
+    expect(s.board.find((o: any) => o.id === "ORD-3003").task).toMatchObject({ status: "resolved", outcome: "recovered" });
+    expect(s.approvals.filter((a: any) => a.order_id === "ORD-3003")).toEqual([]);   // executed alone
+    expect(s.trust.find((t: any) => t.shape === "expedite_po:SUP_IRON").total_autonomous).toBe(1);
+    const miss = await post("/api/events/expedite-miss", { po_id: "PO-8003" }, "owner");
+    expect(miss.status).toBe(200); expect(await miss.json()).toMatchObject({ order_id: "ORD-3003", trust: { status: "demoted", charter_version: 3 } });
+    s = await state(); expect(s.charter.version).toBe(3); expect(s.charter.roles.expeditor.authority.spend_usd).toBe(250);
+    expect(s.board.find((o: any) => o.id === "ORD-3003").days_late).toBeGreaterThan(0);
+    expect((await post("/api/watch", {}, "owner")).status).toBe(200);
+    expect((await post("/api/work", {}, "owner")).status).toBe(200);
+    s = await state();
+    expect(s.approvals.filter((a: any) => a.status === "pending").map((a: any) => `${a.order_id}:${a.action_type}`)).toEqual(["ORD-3003:change_promise_date"]);
+    await approveAllPending();
+    s = await state();
+    expect(s.board.find((o: any) => o.id === "ORD-3003")).toMatchObject({ days_late: 0, task: { status: "resolved", outcome: "recovered" } });
+    expect(s.board.every((o: any) => o.days_late === 0)).toBe(true);
+    expect(s.ledger.some((l: any) => l.kind === "charter_change" && l.charter_rule === "DEMOTION")).toBe(true);
+    expect(s.trust.find((t: any) => t.shape === "expedite_po:SUP_IRON")).toMatchObject({ status: "demoted", streak: 0 });
+  });
+});
