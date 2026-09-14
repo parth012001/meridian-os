@@ -16,7 +16,7 @@ miss its promise date, recover it inside authority, and tell the customer before
 pnpm install
 pnpm seed            # builds data/world.db with sample data (dates relative to today)
 pnpm demo            # full scenario in the terminal, mock LLM, zero spend
-pnpm test            # 11 gate tests
+pnpm test            # gate, flow, agent-loop and trials tests (mock)
 pnpm reset-charter   # the demo merges a Charter change; this restores org.yaml v1
 pnpm build:web && pnpm start   # http://localhost:3000  (control plane UI + API)
 ```
@@ -136,7 +136,7 @@ Two live runs is not testing. So the org is put on probation the way a new hire 
 work, repeated, graded by someone who isn't the worker, plus a few traps.
 
 ```bash
-pnpm trials                    # every scenario once (mock or live depending on OPENAI_API_KEY)
+pnpm trials                    # every scenario once (mock or live depending on OPENAI_API_KEY); stop `pnpm start` first or set DB_PATH, the CLI resets the same data/world.db
 pnpm trials --n 3              # three reps each
 pnpm trials --only prompt_injection_in_supplier_reply
 ```

@@ -10,6 +10,9 @@ export const spentOnOrder = (orderId: string) =>
 /** Lever types the owner already rejected on this task. A rejection is final for the task; enforced here, not by prompt. */
 export const rejectedLevers = (taskId: string) =>
   new Set((db().prepare("SELECT DISTINCT type FROM actions WHERE task_id=? AND status='rejected'").all(taskId) as { type: string }[]).map(r => r.type));
+/** Lever types closed for this task: rejected by the owner or denied by the gate. Neither can block the last resort or escalation. */
+export const closedLevers = (taskId: string) =>
+  new Set((db().prepare("SELECT DISTINCT type FROM actions WHERE task_id=? AND status IN ('rejected','denied')").all(taskId) as { type: string }[]).map(r => r.type));
 
 export function proposeAction(role: string, taskId: string, orderId: string, leverType: ActionType, poId: string | undefined, rationale: string) {
   const order = getOrder(orderId); if (!order) return { error: `unknown order ${orderId}` };
@@ -29,10 +32,11 @@ export function proposeAction(role: string, taskId: string, orderId: string, lev
 
   if (leverType === "change_promise_date") {
     // The outcome is "deliver on the promise date". Moving the date is the last resort, never a shortcut a supplier can talk us into.
-    const keepers = levers.filter(l => l.closes_gap && l.type !== "change_promise_date" && !rejected.has(l.type));
+    const closed = closedLevers(taskId);
+    const keepers = levers.filter(l => l.closes_gap && l.type !== "change_promise_date" && !closed.has(l.type));
     if (keepers.length) {
       log({ role, kind: "error", refType: "task", refId: taskId, summary: `${role} proposed change_promise_date on ${orderId} while ${keepers.map(k => k.type).join("/")} would keep the date; refused by procedure` });
-      return { error: `Moving the promise date is the last resort. These levers keep the customer's date: ${keepers.map(l => `${l.type} ($${l.cost_usd}, requires ${l.requires})`).join("; ")}. Propose one of them; only propose change_promise_date when none of them exist or the owner rejected them.` };
+      return { error: `Moving the promise date is the last resort. These levers keep the customer's date: ${keepers.map(l => `${l.type} ($${l.cost_usd}, requires ${l.requires})`).join("; ")}. Propose one of them; only propose change_promise_date when none of them exist, or the owner rejected them, or the gate denied them.` };
     }
   }
   const consent = leverType === "substitute_sku" && eventsForOrder(orderId, "customer_consent").some(e => JSON.parse(e.payload).to_sku === (lever.params as any).to_sku);

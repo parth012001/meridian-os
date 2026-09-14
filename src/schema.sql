@@ -87,3 +87,4 @@ CREATE TABLE IF NOT EXISTS trials (
   tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, runs INTEGER NOT NULL DEFAULT 0,
   duration_ms INTEGER NOT NULL, started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+CREATE INDEX IF NOT EXISTS trials_started_at ON trials(started_at);

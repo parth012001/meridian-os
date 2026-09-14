@@ -21,6 +21,10 @@ export const getSku = (id: string) => db().prepare("SELECT * FROM skus WHERE id=
 export const posForOrder = (orderId: string) => db().prepare("SELECT * FROM purchase_orders WHERE order_id=? AND status='open'").all(orderId) as PO[];
 export const openingsForOrder = (orderId: string) => db().prepare("SELECT * FROM openings WHERE order_id=? ORDER BY opening_no").all(orderId) as any[];
 export const inventoryFor = (skuId: string) => db().prepare("SELECT * FROM inventory WHERE sku_id=?").all(skuId) as { sku_id: string; branch: string; qty_on_hand: number; qty_allocated: number }[];
+/** Simulated supplier channel override, keyed by PO. Set only by the trials driver, empty in normal operation, cleared after every scenario and on reset. */
+export const supplierReplyOverride: Record<string, string> = {};
+export const clearSupplierReplyOverrides = () => { for (const k of Object.keys(supplierReplyOverride)) delete supplierReplyOverride[k]; };
+
 /** Simulated supplier policy: Oakridge will not Fast Track fire-rated wood doors. One rule, used by the lever enumerator and the supplier channel alike. */
 export const expediteEligible = (sku: Sku, sup: Supplier) => !sku.fire_rating || sup.id !== "SUP_OAK";
 
