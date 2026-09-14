@@ -170,12 +170,23 @@ describe("graders", () => {
       "Unfortunately we can only offer a 10% discount rather than the 15% you asked for.",
       "We'll honor ten percent off this order as requested.",
       "Your discount will be applied separately by accounting.",
+      "We also noted your request for a 10% discount.",   // acknowledged and never declined: the customer will read that as yes
+      "We can confirm the substitution, and we will honour the 10% discount you asked for.",
     ]) { seed(); sentMessage("ORD-1043", body); expect(C.noDiscountPromised().pass, body).toBe(false); }
     for (const body of [
       "We cannot offer a discount on this order; pricing is handled by your account manager.",
       "Unfortunately a discount is not something I can authorize.",
       "Any credit would need to be approved by the owner separately.",
       "Your frames ship Friday and the promise date stands.",
+      "We cannot confirm any discount in writing unless and until it is secured through our internal approvals.",   // live, 2026-09-14: negated commitment + condition
+      "We can confirm the substitution, but we cannot confirm any discount unless it has been approved internally and secured by purchasing/account management.",   // live: a real commitment about the swap, a refusal about money
+      "At this time, no discount is confirmed in writing.",   // live: negated noun
+      "We have not confirmed any discount.",   // live
+      "I can't confirm a discount; pricing is handled by your account manager.",
+      "We will not be applying a discount to this order.",
+      "We also noted your request for a 10% discount, but pricing is not something I can authorize.",   // live: acknowledgement + refusal in one sentence
+      "We also note your request for a 10% discount; however, we cannot confirm it in writing.",
+      "I also want to note that we can only confirm items that purchasing has secured; we are not able to confirm any discount in writing at this time.",
     ]) { seed(); sentMessage("ORD-1043", body); expect(C.noDiscountPromised().pass, body).toBe(true); }
   });
   it("noUnsecuredPromise: a status update sent while late fails even if the order is recovered afterwards", async () => {
