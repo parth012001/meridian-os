@@ -1,0 +1,108 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CHARTER for Meridian Door & Hardware (fictional Division 8 distributor)
+# Humans write this file. Agents read it. Agents can never edit it.
+# Every consequential action is checked against it by src/gate.ts.
+# ─────────────────────────────────────────────────────────────────────────────
+company: Meridian Door & Hardware
+version: 1
+
+outcome:
+  id: no_order_goes_late_unnoticed
+  statement: >
+    Deliver open orders on their promise date. When supply slips, detect it,
+    recover it inside our authority, and tell the customer before they notice.
+
+kpis:
+  on_time_rate:
+    formula: shipped_on_or_before_promise / shipped_total
+    target: ">= 0.95"
+  revenue_protected:
+    formula: sum(order_value where task.outcome = recovered)
+  recovery_cost:
+    formula: sum(actions.cost_usd where executed)
+    constraint: "<= 2% of order value per order without owner approval"
+
+# Hard rules. The gate denies or escalates on these before any LLM is consulted.
+constraints:
+  - id: C1
+    rule: never change a customer promise date without owner approval
+  - id: C2
+    rule: never substitute a SKU without customer consent recorded as an event
+  - id: C3
+    rule: fire-rated openings keep matching door/frame labels; no substitution across ratings
+  - id: C4
+    rule: recovery spend per order <= 2% of order value without owner approval
+  - id: C5
+    rule: never send a delay notice or substitution request to a customer without owner review
+
+# Progressive autonomy per action class: observe -> recommend -> act.
+# The Reviewer role proposes changes to this block. Only the owner merges them.
+autonomy_levels:
+  transfer_stock: act
+  expedite_po: act_within_limit
+  partial_ship: act_if_ship_policy_allows
+  substitute_sku: recommend
+  change_promise_date: recommend
+  discount: recommend
+
+roles:
+  owner:
+    kind: human
+    title: Owner / GM
+    approves: [expedite_over_limit, change_promise_date, discount, substitution, customer_notice, charter_change]
+
+  ops_manager:
+    kind: agent
+    status: live
+    title: Ops Manager (watcher)
+    horizon: continuous
+    model_tier: cheap
+    goal: Find every open order that will miss its promise date and open a task for it.
+    tools: [list_open_orders, get_po_status, get_inventory, open_task]
+    authority: { spend_usd: 0, may: [], may_not: [propose_action] }
+
+  expeditor:
+    kind: agent
+    status: live
+    title: Purchasing / Expeditor
+    horizon: episodic
+    model_tier: standard
+    goal: Close the gap between supply and promise date at the lowest cost inside authority.
+    tools: [get_order_context, find_alternatives, query_supplier_eta, propose_action, no_action_needed]
+    authority:
+      spend_usd: 250
+      may: [expedite_po, transfer_stock, partial_ship]
+      may_not: [change_promise_date, discount]
+      recommend_only: [substitute_sku]
+
+  customer_comms:
+    kind: agent
+    status: live
+    title: Customer Service
+    horizon: episodic
+    model_tier: standard
+    goal: Keep the customer informed in plain language; never promise what purchasing has not secured.
+    tools: [get_order_context, draft_customer_message]
+    authority:
+      send_without_review: [status_update]
+      needs_review: [substitution_request, delay_notice]
+
+  reviewer:
+    kind: agent
+    status: live
+    title: Reviewer (weekly)
+    horizon: weekly
+    model_tier: standard
+    goal: Read the ledger, find where authority limits cost us time or money, propose Charter diffs with evidence.
+    tools: [read_ledger_stats, propose_charter_diff]
+    authority: { spend_usd: 0, may_edit_charter: false }
+
+  # Declared, not wired. Adding a role = adding YAML + a tool file.
+  estimator:  { kind: agent, status: declared, title: Estimator / Inside Sales, tools: [read_spec, price_hardware_set] }
+  detailer:   { kind: agent, status: declared, title: Detailer,                 tools: [build_submittal] }
+  warehouse:  { kind: agent, status: declared, title: Warehouse / Tagging,      tools: [receive, tag_by_opening] }
+  dispatch:   { kind: agent, status: declared, title: Dispatch / Delivery,      tools: [schedule_delivery] }
+
+escalation:
+  default: owner
+  approval_timeout_hours: 4   # re-notify; never auto-approve
