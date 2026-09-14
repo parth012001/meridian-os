@@ -79,6 +79,7 @@ function ProposalCard({ p, owner, busy, act, charter }: { p: Proposal; owner: bo
       {p.replay?.streak && <span className="stamp" title={p.replay.streak.shape}>{p.replay.streak.streak}/{p.replay.streak.threshold} clean approvals</span>}
       <span className={`stamp ${p.status === "merged" ? "ok" : p.status === "rejected" ? "bad" : "warn"}`}>{p.status}</span>
     </div>
+    {p.status === "stale" && <div className="why" style={{ marginTop: 4 }}>Evidence invalidated by a rejection or failure while this waited. Cannot be merged; the streak starts over.</div>}
     {lines.length > 0
       ? <div className="diff">{lines.map(l => <span key={l.path} style={{ display: "contents" }}><span className="path">{l.path}</span><span className="old">{open ? show(l.before) : ""}</span><span className="mute">{open ? "→" : p.status === "merged" ? "now" : "stays"}</span><span className="new">{open || p.status === "merged" ? show(l.after) : show(l.before)}</span></span>)}</div>
       : <pre className="small">{p.patch}</pre>}
