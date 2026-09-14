@@ -4,7 +4,7 @@ import { loadCharter, type ActionType } from "./charter.js";
 import { gate } from "./gate.js";
 import { log } from "./ledger.js";
 import { assessOrder, findAlternatives, applyLever, getOrder, getSku, eventsForOrder, type Lever } from "./world.js";
-import { recordOutcome } from "./trust.js";
+import { recordOutcome, recordAutonomousRun } from "./trust.js";
 
 export const spentOnOrder = (orderId: string) =>
   (db().prepare("SELECT COALESCE(SUM(cost_usd),0) v FROM actions WHERE order_id=? AND status='executed'").get(orderId) as any).v as number;
@@ -56,6 +56,7 @@ export function proposeAction(role: string, taskId: string, orderId: string, lev
 
   if (verdict.verdict === "execute") {
     const r = executeAction(id, role);
+    recordAutonomousRun(db().prepare("SELECT * FROM actions WHERE id=?").get(id) as any);
     return { action_id: id, lever_type: leverType, cost_usd: lever.cost_usd, status: "executed", gate_rule: verdict.rule, gap_closed: r.gapClosed, order_days_late_now: r.daysLate };
   }
   if (verdict.verdict === "approve") {

@@ -4,7 +4,7 @@
 // Only the owner merges. A failure named in the Charter's demote_on revokes autonomy with a Charter patch that only tightens.
 // Every row here is a materialized view of the ledger: evidence and grants point back at approvals, proposals and ledger rows.
 import { db, uid, nowIso } from "./db.js";
-import { loadCharter, previewCharterPatch, validateCharterPatch, applyCharterPatch, type Charter } from "./charter.js";
+import { loadCharter, previewCharterPatch, validateCharterPatch, applyCharterPatch, AUTONOMY_RANK, type Charter } from "./charter.js";
 import { gate, type GateInput } from "./gate.js";
 import { log } from "./ledger.js";
 import { getSku, eventsForOrder } from "./world.js";
@@ -83,7 +83,58 @@ function recordOutcomeUnsafe(input: OutcomeInput): OutcomeResult {
     if (row.status === "proposed") staleProposals(shape, `the owner rejected ${input.action.type} on ${input.action.order_id} while the proposal was pending`);
     return done();
   }
+  // failed: the world says the executed action did not hold. The Charter names which failures revoke trust.
+  const event = input.event ?? "unknown";
+  if (!loadCharter().trust.demote_on.includes(event)) {
+    log({ role: "trust", kind: "observe", refType: "action", refId: input.action.id, summary: `trust ${shape}: ${event} on ${input.action.order_id} is not in trust.demote_on; streak and status untouched` });
+    return done();
+  }
+  if (row.status === "autonomous") { const d = demote(row, event, input.action); return { ...done(), demoted: true, ...(d.charter_version ? { charter_version: d.charter_version } : {}) }; }
+  update(shape, { streak: 0, total_failed: row.total_failed + 1, evidence: "[]", status: row.status === "proposed" ? "supervised" : row.status });
+  log({ role: "trust", kind: "observe", refType: "action", refId: input.action.id, summary: `trust ${shape}: streak reset to 0/${row.threshold} (${event} on ${input.action.order_id})` });
+  if (row.status === "proposed") staleProposals(shape, `${event} on ${input.action.order_id} while the proposal was pending`);
   return done();
+}
+
+/** Does moving `path` from `current` to `next` give the org less autonomy? Unknown shapes are "no" (fail closed: never write). */
+function tightens(path: string, current: unknown, next: unknown): boolean {
+  if (typeof current === "number" && typeof next === "number") return next < current;
+  if (typeof current === "string" && typeof next === "string" && path.startsWith("autonomy_levels.")) return (AUTONOMY_RANK[next] ?? 99) < (AUTONOMY_RANK[current] ?? -1);
+  return false;
+}
+/** Trust is losable: one genuine bad autonomous run revokes it. This is the ONE place an agent-side process writes the Charter, and it
+ *  only ever tightens: it restores the value the owner's merge replaced, and refuses to write if that would loosen anything. The
+ *  shape re-earns the full streak; there is no fast lane back. */
+function demote(row: TrustRow, event: string, action: ActionRow): { charter_version?: number } {
+  const { shape } = row;
+  const base = { streak: 0, total_failed: row.total_failed + 1, evidence: "[]", status: "demoted", grant: null };
+  const grant = parseGrant(row);
+  const untouched = (why: string, kind: "error" | "observe") => {
+    update(shape, base);
+    log({ role: "trust", kind, refType: "trust", refId: shape, charterRule: "DEMOTION", summary: `trust ${shape}: DEMOTED after ${event} on ${action.order_id}; Charter untouched: ${why}` });
+    return {};
+  };
+  if (!grant) return untouched("no grant on record for this shape", "error");
+  const current = valueAt(loadCharter(), grant.path);
+  if (!tightens(grant.path, current, grant.before)) return untouched(`${grant.path} is already at or below the pre-grant value (${JSON.stringify(current)} vs ${JSON.stringify(grant.before)})`, "observe");
+  const patch = patchFor(grant.path, grant.before);
+  const check = validateCharterPatch(patch);
+  if (!check.ok) return untouched(`restoring ${grant.path}=${JSON.stringify(grant.before)} does not parse as a Charter: ${check.error}`, "error");
+  const ch = applyCharterPatch(patch);
+  update(shape, base);
+  log({ role: "trust", kind: "charter_change", refType: "trust", refId: shape, charterRule: "DEMOTION",
+    summary: `Charter v${ch.version}: DEMOTION ${shape} after ${event} on ${action.order_id}; ${grant.path} ${JSON.stringify(current)} -> ${JSON.stringify(grant.before)} (undoes ${grant.proposal_id}, granted in v${grant.charter_version})`,
+    detail: { patch, grant, event, action_id: action.id } });
+  return { charter_version: ch.version };
+}
+/** An action the gate executed without an approval, on a shape the owner made autonomous. Counted so the panel can show what the grant did. */
+export function recordAutonomousRun(action: ActionRow) {
+  try {
+    const row = trustRow(shapeOf(action));
+    if (!row || row.status !== "autonomous") return;
+    update(row.shape, { total_autonomous: row.total_autonomous + 1 });
+    log({ role: "trust", kind: "observe", refType: "action", refId: action.id, summary: `trust ${row.shape}: autonomous run ${row.total_autonomous + 1} ($${action.cost_usd} on ${action.order_id}, no approval needed under Charter v${loadCharter().version})` });
+  } catch (e) { log({ role: "trust", kind: "error", refType: "action", refId: action.id, summary: `trust could not count autonomous run for ${action.id}: ${(e as Error).message}` }); }
 }
 
 /** A pending proposal's evidence no longer holds (a rejection or a failure landed while it waited). It goes stale, never merged. */

@@ -35,9 +35,9 @@ export const TOOLS: Record<string, ToolDef> = {
     run: ({ po_id }, ctx) => {
       const po = db().prepare("SELECT * FROM purchase_orders WHERE id=?").get(po_id) as any; if (!po) return { error: "unknown PO" };
       const s = getSupplier(po.supplier_id); const sku = getSku(po.sku_id);
-      const eligible = expediteEligible(sku, s);
+      const eligible = expediteEligible(sku, s, po);
       log({ role: ctx.role, kind: "message", refType: "po", refId: po_id, summary: `supplier channel: asked ${s.name} for ETA on ${po_id}`, detail: { modality: "supplier_portal" } });
-      const note = supplierReplyOverride[po_id] ?? (eligible ? "Fast Track available, fee applies, no change orders after confirmation" : "not eligible for Fast Track");
+      const note = supplierReplyOverride[po_id] ?? (po.expedite_missed ? "we missed the Fast Track slot on this PO; the confirmed ship date stands and we cannot offer Fast Track on it again" : eligible ? "Fast Track available, fee applies, no change orders after confirmation" : "not eligible for Fast Track");
       return { supplier: s.name, po_id, confirmed_ship_date: po.current_ship_date, expedite_available: eligible, expedite_fee_usd: s.expedite_fee_usd,
         expedite_ship_date: addDays(today(), s.expedite_lead_days), supplier_reply: note };
     } },

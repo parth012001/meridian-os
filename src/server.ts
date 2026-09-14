@@ -9,7 +9,7 @@ import { seed } from "./seed.js";
 import { loadCharter, rawCharterText, restoreBaselineCharter } from "./charter.js";
 import { mergeProposal, rejectProposal, trustView, parseReplay } from "./trust.js";
 import { assessAll, applySupplierSlip, kpis, findAlternatives, clearSupplierReplyOverrides } from "./world.js";
-import { runWatcher, workOpenTasks, ownerDecides, customerConsents, runReviewer, runExpeditor } from "./roles.js";
+import { runWatcher, workOpenTasks, ownerDecides, customerConsents, runReviewer, runExpeditor, supplierMissesExpedite } from "./roles.js";
 import { recentLedger, log } from "./ledger.js";
 import { MOCK, MODEL, MODE } from "./llm.js";
 import { runTrials, scorecard } from "./trials/run.js";
@@ -59,6 +59,12 @@ app.post("/api/events/slip", async c => {
     log({ role: "world", kind: "observe", summary: `event supplier_ack_slip: ${b.supplier_id ?? "SUP_IRON"} ${b.category ?? "frame"} +${b.days ?? 10}d touched ${ids.join(", ")}` });
     return { touched: ids };
   });
+});
+app.post("/api/events/expedite-miss", async c => {
+  const denied = ownerOnly(c); if (denied) return denied;
+  const b = await c.req.json().catch(() => ({}));
+  if (typeof b.po_id !== "string" || !b.po_id) return c.json({ error: "po_id required" }, 400);
+  return guard(c, async () => { const r = supplierMissesExpedite(b.po_id); if ("error" in r) throw Object.assign(new Error(r.error), { status: 400 }); return r; });
 });
 app.post("/api/watch", c => guard(c, async () => runWatcher()));
 app.post("/api/work", c => guard(c, () => workOpenTasks()));

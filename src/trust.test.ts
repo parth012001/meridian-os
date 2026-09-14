@@ -16,8 +16,8 @@ vi.hoisted(() => {
 import { db } from "./db.js";
 import { seed } from "./seed.js";
 import { loadCharter, restoreBaselineCharter } from "./charter.js";
-import { applySupplierSlip } from "./world.js";
-import { runWatcher, workOpenTasks, ownerDecides } from "./roles.js";
+import { applySupplierSlip, applyExpediteMiss, findAlternatives, assessOrder, getOrder } from "./world.js";
+import { runWatcher, workOpenTasks, ownerDecides, supplierMissesExpedite } from "./roles.js";
 import { decideApproval } from "./actions.js";
 import { recordOutcome, trustRows, shapeOf, buildReplay, mergeProposal, rejectProposal } from "./trust.js";
 import { TOOLS } from "./tools.js";
@@ -223,5 +223,102 @@ describe("trust api", () => {
     const t = await (await get("/api/trust")).json() as any;
     expect(t.shapes[0]).toMatchObject({ shape: "expedite_po:SUP_IRON", grant: null });
     expect(t.shapes[0].evidence[0]).toMatchObject({ order_id: expect.any(String), approval_id: expect.any(String) });
+  });
+});
+
+describe("demotion", () => {
+  /** Earn, merge, and let the next Ironline expedite run without the owner. Returns the PO that was auto-expedited. */
+  const earnAndAutoExecute = async () => {
+    await earnThree();
+    mergeProposal(proposals("proposed_by='trust'")[0].id, "owner");
+    seedExpediteOrders(1, { from: 3 }); applySupplierSlip("SUP_IRON", "frame", 10, "Ironline slips again"); runWatcher(); await workOpenTasks();
+    const a = one("SELECT * FROM actions WHERE order_id='ORD-3003' AND type='expedite_po'");
+    expect(a).toMatchObject({ gate_verdict: "execute", gate_rule: "AUTONOMY.act_within_limit", status: "executed", cost_usd: 450 });
+    expect(q("SELECT 1 FROM approvals ap JOIN actions a ON a.id=ap.action_id WHERE a.order_id='ORD-3003'")).toEqual([]);
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ status: "autonomous", total_autonomous: 1 });
+    return "PO-8003";
+  };
+  it("the world can record a missed Fast Track: the PO falls back to its pre-expedite date, the order is late again, and the expedite is not offered twice", async () => {
+    slipFrames(); runWatcher(); await workOpenTasks(); await approveAll(a => a.order_id === "ORD-1042");
+    const po = one("SELECT * FROM purchase_orders WHERE id='PO-7103'"); expect(po.expedited).toBe(1); expect(po.pre_expedite_ship_date).toBeTruthy();
+    expect(assessOrder(getOrder("ORD-1042")!).daysLate).toBe(0);
+    expect(applyExpediteMiss("PO-7104")).toMatchObject({ error: expect.stringMatching(/not an open expedited PO/) });
+    expect(applyExpediteMiss("PO-nope")).toMatchObject({ error: expect.stringMatching(/unknown PO/) });
+    const r = applyExpediteMiss("PO-7103") as any;
+    expect(r).toMatchObject({ po_id: "PO-7103", order_id: "ORD-1042", supplier_id: "SUP_IRON", days_late: 5 });
+    expect(one("SELECT * FROM purchase_orders WHERE id='PO-7103'")).toMatchObject({ current_ship_date: po.pre_expedite_ship_date, expedited: 0, expedite_missed: 1 });
+    expect(assessOrder(getOrder("ORD-1042")!).daysLate).toBe(5);
+    expect(q("SELECT 1 FROM events WHERE type='expedite_failed' AND order_id='ORD-1042'").length).toBe(1);
+    expect(findAlternatives("ORD-1042").some(l => l.type === "expedite_po")).toBe(false);
+    const eta = TOOLS.query_supplier_eta.run({ po_id: "PO-7103" }, { role: "expeditor", runId: "r" }) as any;
+    expect(eta.expedite_available).toBe(false); expect(eta.supplier_reply).toMatch(/missed/i);
+    expect(applyExpediteMiss("PO-7103")).toMatchObject({ error: expect.any(String) });   // a miss is recorded once
+  });
+  it("a missed expedite on an autonomous shape revokes it: the Charter tightens back to the pre-grant value under rule DEMOTION", async () => {
+    const po = await earnAndAutoExecute();
+    expect(loadCharter().version).toBe(2); expect(loadCharter().roles.expeditor.authority.spend_usd).toBe(450);
+    const oldTask = one("SELECT * FROM tasks WHERE order_id='ORD-3003'"); expect(oldTask.outcome).toBe("recovered");
+    const r = supplierMissesExpedite(po) as any;
+    expect(r).toMatchObject({ order_id: "ORD-3003", days_late: 5, trust: { shape: "expedite_po:SUP_IRON", status: "demoted", demoted: true, charter_version: 3 } });
+    expect(loadCharter().version).toBe(3); expect(loadCharter().roles.expeditor.authority.spend_usd).toBe(250);
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ status: "demoted", streak: 0, total_failed: 1, evidence: "[]", grant: null });
+    const led = one("SELECT * FROM ledger WHERE kind='charter_change' AND charter_rule='DEMOTION'");
+    expect(led).toMatchObject({ role: "trust", ref_type: "trust", ref_id: "expedite_po:SUP_IRON" }); expect(led.summary).toMatch(/Charter v3/); expect(led.summary).toMatch(/450 -> 250/);
+    expect(one("SELECT outcome FROM tasks WHERE id=?", oldTask.id).outcome).toBe("recovery_failed");
+    // the watcher reopens the order; the expeditor cannot expedite again, so the last resort goes to the owner under C1
+    runWatcher(); await workOpenTasks();
+    const t = one("SELECT * FROM tasks WHERE order_id='ORD-3003' ORDER BY rowid DESC LIMIT 1"); expect(t.id).not.toBe(oldTask.id);
+    expect(pending().find(a => a.order_id === "ORD-3003")).toMatchObject({ type: "change_promise_date" });
+    // and the next expedite of that shape parks again at $250
+    seedExpediteOrders(1, { from: 4 }); applySupplierSlip("SUP_IRON", "frame", 10, "third"); runWatcher(); await workOpenTasks();
+    expect(one("SELECT gate_verdict, gate_rule FROM actions WHERE order_id='ORD-3004' AND type='expedite_po'")).toEqual({ gate_verdict: "approve", gate_rule: "ROLE.spend_usd" });
+  });
+  it("a missed expedite on a supervised shape resets the streak and stales a pending proposal; the Charter is untouched", async () => {
+    await earnThree();
+    expect(trust("expedite_po:SUP_IRON").status).toBe("proposed");
+    const r = supplierMissesExpedite("PO-8001") as any;
+    expect(r.trust).toMatchObject({ status: "supervised", streak: 0 });
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ status: "supervised", streak: 0, total_failed: 1, evidence: "[]" });
+    expect(proposals("proposed_by='trust'")[0].status).toBe("stale");
+    expect(loadCharter().version).toBe(1);
+    expect(q("SELECT 1 FROM ledger WHERE charter_rule='DEMOTION'")).toEqual([]);
+  });
+  it("demotion only ever tightens: if the owner already hand-tightened below the pre-grant value, the Charter is left alone", async () => {
+    const po = await earnAndAutoExecute();
+    editCharter("spend_usd: 450", "spend_usd: 200");
+    expect(loadCharter().roles.expeditor.authority.spend_usd).toBe(200);
+    const r = supplierMissesExpedite(po) as any;
+    expect(r.trust).toMatchObject({ status: "demoted", demoted: true }); expect(r.trust.charter_version).toBeUndefined();
+    expect(loadCharter().version).toBe(2); expect(loadCharter().roles.expeditor.authority.spend_usd).toBe(200);
+    expect(q("SELECT 1 FROM ledger WHERE charter_rule='DEMOTION' AND kind='charter_change'")).toEqual([]);
+    expect(q("SELECT 1 FROM ledger WHERE role='trust' AND summary LIKE '%already at or below%'").length).toBe(1);
+  });
+  it("the Charter decides which failures revoke trust: a miss not named in demote_on changes the world but not the shape", async () => {
+    const po = await earnAndAutoExecute();
+    editCharter("demote_on: [expedite_failed]", "demote_on: []");
+    expect(loadCharter().trust.demote_on).toEqual([]);
+    const r = supplierMissesExpedite(po) as any;
+    expect(r).toMatchObject({ order_id: "ORD-3003", days_late: 5, trust: { status: "autonomous" } });
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ status: "autonomous", total_failed: 0 });
+    expect(loadCharter().version).toBe(2);
+    expect(q("SELECT 1 FROM ledger WHERE role='trust' AND summary LIKE '%not in trust.demote_on%'").length).toBe(1);
+  });
+  it("a demoted shape re-earns the full streak and can be proposed again", async () => {
+    const po = await earnAndAutoExecute(); supplierMissesExpedite(po);
+    seedExpediteOrders(3, { from: 5 }); applySupplierSlip("SUP_IRON", "frame", 10, "again"); runWatcher(); await workOpenTasks();
+    await approveAll(a => a.type === "expedite_po" && a.order_id.startsWith("ORD-300"));
+    expect(trust("expedite_po:SUP_IRON")).toMatchObject({ status: "proposed", streak: 3 });
+    expect(proposals("proposed_by='trust' AND status='proposed'")).toHaveLength(1);
+  });
+  it("POST /api/events/expedite-miss is owner-only and fails closed on a bad PO", async () => {
+    const po = await earnAndAutoExecute();
+    expect((await post("/api/events/expedite-miss", { po_id: po })).status).toBe(403);
+    expect((await post("/api/events/expedite-miss", { po_id: po }, "viewer")).status).toBe(403);
+    expect((await post("/api/events/expedite-miss", {}, "owner")).status).toBe(400);
+    expect((await post("/api/events/expedite-miss", { po_id: "PO-7104" }, "owner")).status).toBe(400);
+    expect(loadCharter().version).toBe(2);
+    const res = await post("/api/events/expedite-miss", { po_id: po }, "owner"); expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ order_id: "ORD-3003", trust: { status: "demoted", charter_version: 3 } });
+    expect((await post("/api/events/expedite-miss", { po_id: po }, "owner")).status).toBe(400);
   });
 });
