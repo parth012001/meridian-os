@@ -78,7 +78,7 @@ ready (only if the order's ship policy allows), substitute an equivalent SKU in 
 5. The trust ledger now reads `expedite_po:SUP_IRON 1/3`: one clean owner approval of that shape toward the Charter's threshold of three. The Reviewer reads it. The scripted Reviewer proposes raising the Expeditor limit to $450 anyway, and the proposal carries a replay: "0 of 2 past approvals would have executed without you; 2 would still park under C1/C4" ($450 is more than 2% of an $18,500 order, and the promise-date change is C1 whatever the limit). The replay just showed the owner a proposal that changes nothing. The live model reads the same numbers and declines: "no trust shape has reached its threshold." Either way the owner decides with the replay in front of them.
 6. The full loop is the trial `earned_then_lost` (`pnpm trials --only earned_then_lost`): three approvals of the same shape → the trust engine files the proposal with its replay → owner merges (v2) → the next Ironline expedite executes with no approval → Ironline misses Fast Track → the shape is demoted, the Charter tightens back (v3) under rule `DEMOTION`, and the reopened order goes to the owner as a last resort.
 
-Run it: `pnpm demo`, or in the UI click Inject event → Run Ops Manager → Expeditor: work → approve in the inbox → Customer replies YES → Run weekly Reviewer → Merge.
+Run it: `pnpm demo`, or in the UI follow the numbered dock at the bottom of the page (the highlighted step is the one the World is ready for). Switch the dock's World to **Earned autonomy** and the same dock walks the fourteen steps of the arc above, ending with the Charter at v3 and the shape demoted; the trial `earned_then_lost` grades the same sequence unattended.
 
 ## Answers to the six questions
 
