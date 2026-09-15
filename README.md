@@ -2,7 +2,7 @@
 
 **An autonomous organization for a commercial door, frame and hardware distributor.**
 
-Meridian OS is a working prototype of an autonomous organization built for the SlaterWorks technical case study. It models a fictional Division 8 distributor, Meridian Door & Hardware, as a human-governed organization in which AI agents hold seats, work queues, and spend within limits that people wrote down. Three agent seats are live and complete a multi-step recovery workflow end to end; a human owner keeps every decision that requires judgment.
+Meridian OS is a working prototype of an autonomous organization built for the SlaterWorks technical case study. It models a fictional Division 8 distributor, Meridian Door & Hardware, as a human-governed organization in which AI agents hold seats, work queues, and spend within limits that people wrote down. Four agent seats are live (three model-driven, one deterministic watcher) and complete a multi-step recovery workflow end to end; a human owner keeps every decision that requires judgment.
 
 | | |
 |---|---|
@@ -37,7 +37,7 @@ Graded live runs: `pnpm trials` (every scenario once), `pnpm trials --n 3`, `pnp
 - **Baseline** (seven steps): one supplier slip, three orders recovered three different ways, the Reviewer's proposal, the owner's merge.
 - **Earned autonomy** (fourteen steps): three approvals of one action shape earn a Charter proposal with a replay; the owner merges; the next expedite of that shape executes without an approval; the supplier misses the expedited date; the shape is demoted and the Charter tightens back. The trial `earned_then_lost` grades the same sequence unattended.
 
-The role switch in the masthead (owner / viewer) shows what a viewer can see and cannot do.
+The role switch in the masthead (owner / viewer) shows what a viewer can see and cannot do: a viewer reads everything and runs nothing, including the org's own clocks.
 
 ## Design
 
@@ -55,7 +55,7 @@ Everything in the codebase is one of five primitives.
 
 ## The organization
 
-Eight seats are declared in `org.yaml`. Three agent seats are live, one is human, and four are declared with their tool lists and not yet wired (adding one is a YAML entry plus a tool file).
+Nine seats are declared in `org.yaml`. Four agent seats are live, one is human, and four are declared with their tool lists and not yet wired (adding one is a YAML entry plus a tool file).
 
 | Seat | Kind | Horizon | Responsibility |
 |---|---|---|---|

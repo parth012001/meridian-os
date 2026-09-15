@@ -155,6 +155,15 @@ describe("api", () => {
   });
   it("scenario controls are owner-only", async () => {
     expect((await post("/api/reset")).status).toBe(403);
+    // the org's own clocks too: a viewer cannot open work or make a seat spend inside its authority
+    slipFrames();
+    for (const path of ["/api/watch", "/api/work", "/api/review"]) for (const role of [undefined, "viewer"]) expect((await post(path, {}, role)).status, `${role ?? "no role"} ${path}`).toBe(403);
+    expect(q("SELECT 1 FROM tasks").length).toBe(0);
+    expect((await post("/api/watch", {}, "owner")).status).toBe(200);
+    const t = taskFor("ORD-1041");
+    expect((await post(`/api/tasks/${t.id}/work`, {}, "viewer")).status).toBe(403);
+    expect(q("SELECT 1 FROM actions").length).toBe(0);
+    seed();
     expect((await post("/api/reset", {}, "viewer")).status).toBe(403);
     expect((await post("/api/customer/consent", { order_id: "ORD-1043" }, "viewer")).status).toBe(403);
     expect((await post("/api/events/slip", { supplier_id: "SUP_IRON", category: "frame", days: 10 })).status).toBe(403);
