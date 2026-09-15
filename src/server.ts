@@ -76,9 +76,10 @@ app.post("/api/events/expedite-miss", async c => {
   if (typeof b.po_id !== "string" || !b.po_id) return c.json({ error: "po_id required" }, 400);
   return guard(c, async () => { const r = supplierMissesExpedite(b.po_id); if ("error" in r) throw Object.assign(new Error(r.error), { status: 400 }); return r; });
 });
-app.post("/api/watch", c => guard(c, async () => runWatcher()));
-app.post("/api/work", c => guard(c, () => workOpenTasks()));
-app.post("/api/tasks/:id/work", c => guard(c, () => runExpeditor(c.req.param("id"))));
+// Running the org's own clocks is an owner action too: a watch cycle opens work and a work cycle spends inside authority.
+app.post("/api/watch", c => ownerOnly(c) ?? guard(c, async () => runWatcher()));
+app.post("/api/work", c => ownerOnly(c) ?? guard(c, () => workOpenTasks()));
+app.post("/api/tasks/:id/work", c => ownerOnly(c) ?? guard(c, () => runExpeditor(c.req.param("id"))));
 app.post("/api/approvals/:id", async c => {
   const denied = ownerOnly(c); if (denied) return denied;
   const b = await c.req.json().catch(() => ({}));
@@ -90,7 +91,7 @@ app.post("/api/customer/consent", async c => {
   const b = await c.req.json().catch(() => ({}));
   return guard(c, () => customerConsents(b.order_id));
 });
-app.post("/api/review", c => guard(c, () => runReviewer()));
+app.post("/api/review", c => ownerOnly(c) ?? guard(c, () => runReviewer()));
 app.post("/api/proposals/:id", async c => {
   const denied = ownerOnly(c); if (denied) return denied;
   if (busy) return c.json({ error: "an agent run is already in progress" }, 409);   // never change the Charter under a running desk or trial

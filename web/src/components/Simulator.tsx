@@ -104,7 +104,7 @@ export function Simulator({ s, owner, act }: { s: State; owner: boolean; act: Ac
       <div className="top">
         <span className="label"><b>Outside world</b> and the org's own clocks, in demo order{arc ? <>: <b>earned autonomy</b>, the arc the trial grades</> : ""}</span>
         <span className="spacer" />
-        <span className="next">{!owner ? "Viewer: the world's events and decisions need the owner." : next === 0 ? done : ""}</span>
+        <span className="next">{!owner ? "Viewer: running the org, the world's events, and decisions all need the owner." : next === 0 ? done : ""}</span>
         <span className="label" style={{ marginLeft: 8 }}>World</span>
         <button className={`btn small ${!arc ? "primary" : "quiet"}`} onClick={act("/reset", { world: "baseline" })} disabled={s.busy || !owner} title="Reseed the baseline World (three orders hit by one slip) and restore the Charter">Baseline</button>
         <button className={`btn small ${arc ? "primary" : "quiet"}`} onClick={act("/reset", { world: "earned_autonomy" })} disabled={s.busy || !owner} title="Reseed with three extra $25k Ironline orders so one shape can earn autonomy, use it, and lose it; restores the Charter">Earned autonomy</button>
@@ -114,9 +114,9 @@ export function Simulator({ s, owner, act }: { s: State; owner: boolean; act: Ac
           const isNext = st.n === next;
           if (st.who === "you") return <span key={st.n} className={`hint ${isNext ? "next" : ""}`}><span className="n" aria-hidden="true" style={{ fontSize: 11, border: "1px solid currentColor", borderRadius: "50%", width: 16, height: 16, display: "inline-grid", placeItems: "center" }}>{st.n}</span>{st.label}</span>;
           if (st.per) return st.per.length
-            ? st.per.map(id => <button key={st.n + id} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || (st.ownerOnly && !owner)} onClick={act(st.path!, { order_id: id })}><span className="n" aria-hidden="true">{st.n}</span>{st.label} ({id})</button>)
+            ? st.per.map(id => <button key={st.n + id} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || !owner} onClick={act(st.path!, { order_id: id })}><span className="n" aria-hidden="true">{st.n}</span>{st.label} ({id})</button>)
             : <button key={st.n} className="btn" disabled title="Appears when an order is waiting on a customer"><span className="n" aria-hidden="true">{st.n}</span>{st.label}</button>;
-          return <button key={st.n} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || (st.ownerOnly && !owner)} onClick={act(st.path!, st.body)} title={st.who === "world" ? "Stands in for the outside world" : "Runs the agent seat"}><span className="n" aria-hidden="true">{st.n}</span>{st.label}</button>;
+          return <button key={st.n} className={`btn ${isNext ? "primary" : ""}`} disabled={s.busy || !owner} onClick={act(st.path!, st.body)} title={st.who === "world" ? "Stands in for the outside world" : "Runs the agent seat"}><span className="n" aria-hidden="true">{st.n}</span>{st.label}</button>;
         })}
       </div>
       {expedited.length > 0 && <div className="group">
