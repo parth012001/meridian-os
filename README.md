@@ -1,5 +1,7 @@
 # Meridian OS
 
+[![CI](https://github.com/parth012001/meridian-os/actions/workflows/ci.yml/badge.svg)](https://github.com/parth012001/meridian-os/actions/workflows/ci.yml)
+
 **An autonomous organization for a commercial door, frame and hardware distributor.**
 
 Meridian OS is a working prototype of an autonomous organization built for the SlaterWorks technical case study. It models a fictional Division 8 distributor, Meridian Door & Hardware, as a human-governed organization in which AI agents hold seats, work queues, and spend within limits that people wrote down. Four agent seats are live (three model-driven, one deterministic watcher) and complete a multi-step recovery workflow end to end; a human owner keeps every decision that requires judgment.
@@ -176,3 +178,7 @@ src/trials/               scenarios, graders, runner (+ trials.test.ts)
 src/flow.test.ts          end-to-end state machine and API tests
 web/                      React control plane (+ Simulator.test.tsx)
 ```
+
+## How it was built
+
+September 2026, for a technical case study, with an AI coding agent doing most of the typing. The five primitives, the Charter schema, the rule that the gate never consults a model and can only be tightened by an agent, the trials harness and its three red-team traps, and every review were mine. The mock model exists so that every test and demo is reproducible for free; live mode proves the model against the same tool protocol.
